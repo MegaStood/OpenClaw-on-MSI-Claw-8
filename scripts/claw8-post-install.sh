@@ -26,6 +26,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 REAL_USER=${SUDO_USER:-$USER}
+REAL_HOME=$(eval echo ~"$REAL_USER")
 
 # ============================================================
 # PHASE 1: System Update
@@ -82,7 +83,7 @@ if dnf list installed 2>/dev/null | grep -q hhd; then
 fi
 
 # Check if pip-installed HHD exists (check file path directly, not PATH)
-HHD_PATH="/home/$REAL_USER/.local/bin/hhd"
+HHD_PATH="$REAL_HOME/.local/bin/hhd"
 if [ -f "$HHD_PATH" ]; then
     HHD_VER=$("$HHD_PATH" --version 2>/dev/null || echo "unknown version")
     echo -e "${GREEN}  HHD already installed ($HHD_VER). Skipping.${NC}"
@@ -175,186 +176,392 @@ fi
 echo ""
 
 # ============================================================
-# PHASE 6: Install Ollama + OpenClaw (optional)
+# PHASE 6: Install llama.cpp (Vulkan) + OpenClaw (optional)
 # ============================================================
-echo -e "${YELLOW}[6/7] AI tools setup...${NC}"
+echo -e "${YELLOW}[6/7] AI tools setup (llama.cpp with Vulkan GPU acceleration)...${NC}"
+echo ""
+echo "  Ollama does not support Vulkan on Intel iGPU — it runs CPU-only."
+echo "  llama.cpp with Vulkan gives ~2-3x faster token generation on Arc 140V."
+echo ""
 
-# Create model directories with correct ownership
+# Create model directory with correct ownership
 echo "  Setting up model directories..."
 mkdir -p /shared/models/gguf
 chown -R "$REAL_USER:$REAL_USER" /shared/models
 
-read -p "  Install Ollama + OpenClaw for AI assistant? (y/n): " INSTALL_AI
+read -p "  Install llama.cpp + AI tools? (y/n): " INSTALL_AI
 
 if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
 
-    # Check if Ollama is properly installed (not just binary exists, but actually works)
-    if command -v ollama &>/dev/null && ollama --version &>/dev/null; then
-        OLLAMA_VER=$(ollama --version 2>/dev/null || echo "unknown")
-        echo -e "${GREEN}  Ollama already installed ($OLLAMA_VER). Skipping installation.${NC}"
-    else
-        if command -v ollama &>/dev/null; then
-            echo "  Ollama binary found but not functional. Reinstalling..."
-        else
-            echo "  Installing Ollama..."
-        fi
-        curl -fsSL https://ollama.com/install.sh | sh
+    # ----------------------------------------------------------
+    # Step A: Install build dependencies
+    # ----------------------------------------------------------
+    echo ""
+    echo "  Installing build dependencies..."
+    # shaderc provides glslc (Vulkan shader compiler) — without it cmake fails with:
+    #   "Could NOT find Vulkan (missing: glslc)"
+    # nvtop provides GPU monitoring — intel_gpu_top does NOT work on the xe driver:
+    #   "No device filter specified and no discrete/integrated i915 devices found"
+    dnf install -y cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel shaderc \
+        nvtop python3-pip 2>&1 | tail -1
+
+    # Verify glslc is available (most common build failure on Nobara)
+    if ! command -v glslc &>/dev/null; then
+        echo -e "${RED}  glslc not found after installing shaderc. Trying alternative...${NC}"
+        dnf install -y glslc 2>/dev/null || \
+            dnf install -y glslang 2>/dev/null || \
+            echo -e "${RED}  Could not install glslc. Vulkan build will likely fail.${NC}"
     fi
 
+    # ----------------------------------------------------------
+    # Step B: Build llama.cpp with Vulkan
+    # ----------------------------------------------------------
+    LLAMA_DIR="$REAL_HOME/llama.cpp"
+    LLAMA_SERVER="$LLAMA_DIR/build/bin/llama-server"
+
+    if [ -f "$LLAMA_SERVER" ]; then
+        echo -e "${GREEN}  llama.cpp already built at $LLAMA_DIR. Skipping build.${NC}"
+        echo "  To rebuild: cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j\$(nproc)"
+    else
+        echo "  Cloning and building llama.cpp with Vulkan support..."
+        echo "  (This may take a few minutes...)"
+        sudo -u "$REAL_USER" bash -c "
+            git clone https://github.com/ggerganov/llama.cpp $LLAMA_DIR 2>/dev/null || \
+                (cd $LLAMA_DIR && git pull)
+            cd $LLAMA_DIR
+            # Clean any previous build to avoid cmake cache issues
+            # (e.g., a prior build without Vulkan would cache DGGML_VULKAN=OFF)
+            rm -rf build
+            cmake -B build -DGGML_VULKAN=ON
+            cmake --build build --config Release -j\$(nproc)
+        "
+
+        if [ -f "$LLAMA_SERVER" ]; then
+            echo -e "${GREEN}  llama.cpp built successfully with Vulkan support.${NC}"
+
+            # Verify Vulkan is actually compiled in (not just a CPU-only build)
+            # Without Vulkan you get: "no usable GPU found, --gpu-layers option will be ignored"
+            echo "  Verifying Vulkan backend..."
+            VULKAN_CHECK=$(sudo -u "$REAL_USER" "$LLAMA_SERVER" --help 2>&1 | head -5)
+            if echo "$VULKAN_CHECK" | grep -qi "vulkan"; then
+                echo -e "${GREEN}  Vulkan backend confirmed working.${NC}"
+            else
+                echo -e "${YELLOW}  Warning: Vulkan may not be active. If GPU offload doesn't work,${NC}"
+                echo -e "${YELLOW}  rebuild with: cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j\$(nproc)${NC}"
+            fi
+        else
+            echo -e "${RED}  llama.cpp build failed. Check errors above.${NC}"
+            echo "  You can retry manually:"
+            echo "    cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j\$(nproc)"
+        fi
+    fi
+
+    # ----------------------------------------------------------
+    # Step C: Install run-model.sh launcher
+    # ----------------------------------------------------------
+    echo "  Installing model launcher script..."
+    cat > "$REAL_HOME/run-model.sh" << 'RUNMODEL'
+#!/bin/bash
+# run-model.sh — auto-discover and launch GGUF models via llama.cpp
+# - Models >= 9B: reasoning ON, 32k context (agentic/tool-calling ready)
+# - Models < 9B:  reasoning OFF, 8k context
+
+MODEL_DIR="/shared/models/gguf"
+LLAMA_SERVER="$HOME/llama.cpp/build/bin/llama-server"
+
+# Extract parameter count (in billions) from filename
+get_param_size() {
+    local name=$(basename "$1")
+    # Match the largest number followed by 'B' (e.g., 35B-A3B → 35, 24B-A2B → 24)
+    local size=$(echo "$name" | grep -oiP '\d+(\.\d+)?(?=B[-._])' | head -1)
+    if [ -n "$size" ]; then
+        printf "%.0f" "$size"
+        return
+    fi
+    # Fallback: estimate from file size (Q4 ≈ 0.6 GB per 1B params)
+    local file_gb=$(du -BG "$1" | grep -oP '\d+')
+    echo $(( file_gb * 10 / 6 ))
+}
+
+# Collect all .gguf files into an array
+mapfile -t MODELS < <(find "$MODEL_DIR" -maxdepth 1 -name "*.gguf" -not -name ".*" | sort)
+
+if [ ${#MODELS[@]} -eq 0 ]; then
+    echo "No .gguf models found in $MODEL_DIR"
+    echo "Download models from https://huggingface.co and place .gguf files in $MODEL_DIR"
+    exit 1
+fi
+
+# If no argument, show menu
+if [ -z "$1" ]; then
+    echo ""
+    echo "Available models:"
+    echo "───────────────────────────────────────────────────────────────────────────────"
+    for i in "${!MODELS[@]}"; do
+        name=$(basename "${MODELS[$i]}")
+        size=$(du -h "${MODELS[$i]}" | cut -f1)
+        params=$(get_param_size "${MODELS[$i]}")
+        if [ "$params" -ge 9 ] 2>/dev/null; then
+            mode="reasoning ON  | ctx 32k"
+        else
+            mode="reasoning OFF | ctx 8k"
+        fi
+        printf "  %d) %-52s [%5s] %s\n" $((i+1)) "$name" "$size" "$mode"
+    done
+    echo ""
+    read -p "Select model (1-${#MODELS[@]}): " choice
+else
+    choice="$1"
+fi
+
+# Validate selection
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#MODELS[@]} ]; then
+    echo "Invalid selection: $choice"
+    exit 1
+fi
+
+MODEL="${MODELS[$((choice-1))]}"
+MODEL_NAME=$(basename "$MODEL")
+PARAMS=$(get_param_size "$MODEL")
+
+# Set reasoning and context based on model size
+# - Small models (<9B) loop endlessly in thinking mode — disable it
+# - Large models benefit from reasoning for agentic/tool-calling tasks
+# - 32k context needed for OpenClaw tool calling (schemas + history eat tokens)
+# - 8k is sufficient for simple chat with small models
+if [ "$PARAMS" -ge 9 ] 2>/dev/null; then
+    REASONING_ARGS=""
+    CONTEXT=32768
+    MODE_LABEL="reasoning ON, context 32k"
+else
+    REASONING_ARGS="--reasoning-budget 0"
+    CONTEXT=8192
+    MODE_LABEL="reasoning OFF, context 8k"
+fi
+
+# Kill existing server
+pkill -f llama-server 2>/dev/null && sleep 1
+
+echo ""
+echo "Loading: $MODEL_NAME"
+echo "Params:  ~${PARAMS}B"
+echo "Mode:    $MODE_LABEL"
+echo "API:     http://127.0.0.1:8080/v1/chat/completions"
+echo "Web UI:  http://127.0.0.1:8080"
+echo "───────────────────────────────────────────────────────────────────────────────"
+echo ""
+
+# -ngl 99: offload all layers to GPU (Vulkan). Without this, runs CPU-only
+# -t 8:    use all 8 threads. Default is 2, which bottlenecks prompt processing
+#          (207 t/s with 2 threads vs 652 t/s with 8 threads on Qwen3.5-4B)
+# -c:      explicit context size. Without this, defaults to model's training context
+#          (e.g., 262k for Qwen3.5) which eats 8GB+ of RAM for KV cache alone
+$LLAMA_SERVER \
+    -m "$MODEL" \
+    -ngl 99 \
+    -t 8 \
+    -c $CONTEXT \
+    $REASONING_ARGS
+RUNMODEL
+    chown "$REAL_USER:$REAL_USER" "$REAL_HOME/run-model.sh"
+    chmod +x "$REAL_HOME/run-model.sh"
+    echo -e "${GREEN}  Installed ~/run-model.sh${NC}"
+
+    # ----------------------------------------------------------
+    # Step D: Install huggingface-cli for model downloads
+    # ----------------------------------------------------------
+    echo "  Installing huggingface-cli for model downloads..."
+    sudo -u "$REAL_USER" pip install --break-system-packages -q huggingface-hub 2>/dev/null
+    echo -e "${GREEN}  huggingface-cli installed.${NC}"
+
+    # ----------------------------------------------------------
+    # Step E: Model selection and download
+    # ----------------------------------------------------------
     echo ""
     echo "  ┌─────────────────────────────────────────────────────────────────┐"
-    echo "  │              Choose a model for OpenClaw                        │"
+    echo "  │              Choose a model to download                         │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
-    echo "  │  LOCAL MODELS (run on this device)                              │"
+    echo "  │  LOCAL MODELS (downloaded as GGUF, run with Vulkan GPU)         │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
-    echo "  │  1) qwen3.5:9b        [6.6GB]  ★ RECOMMENDED                   │"
-    echo "  │     Dense 9B. Multimodal (text+image), tool calling,            │"
-    echo "  │     thinking mode. Best all-rounder for 32GB shared RAM.        │"
+    echo "  │  1) Qwen3.5-9B Q4_K_M        [~6GB]  ★ RECOMMENDED             │"
+    echo "  │     Dense 9B. Tool calling, thinking mode.                      │"
+    echo "  │     Best all-rounder for 32GB. Full GPU offload.                │"
     echo "  │                                                                 │"
-    echo "  │  2) gpt-oss:20b       [12GB]                                    │"
-    echo "  │     MoE 20B/3.6B active. Most tested model in OpenClaw          │"
-    echo "  │     community. Very reliable tool calling. Text only.            │"
+    echo "  │  2) GLM-4.7-Flash Q4_K_M     [~18GB]                           │"
+    echo "  │     MoE 30B/3B active. Best agentic coding (59% SWE-bench).    │"
+    echo "  │     Tool calling + thinking. Proven ~13 t/s on Arc 140V.       │"
     echo "  │                                                                 │"
-    echo "  │  3) lfm2:24b          [14GB]                                    │"
+    echo "  │  3) LFM2-24B-A2B Q5_K_M      [~17GB]                           │"
     echo "  │     MoE 24B/2B active. Liquid AI hybrid architecture.           │"
-    echo "  │     Designed for on-device. Fastest MoE inference. Tool calling. │"
-    echo "  │     32K context (shorter than others). Text only.               │"
+    echo "  │     Designed for on-device. Fast MoE inference. Tool calling.   │"
     echo "  │                                                                 │"
-    echo "  │  4) glm-4.7-flash     [19GB]  ⚠ TIGHT ON RAM                   │"
-    echo "  │     MoE 30B/3B active. Best agentic coding (59% SWE-bench).     │"
-    echo "  │     Officially recommended by Ollama. Tool calling + thinking.   │"
+    echo "  │  4) Qwen3.5-4B Q4_K_M        [~3GB]  ⚡ FASTEST                │"
+    echo "  │     Dense 4B. Lightweight, ~15 t/s on Arc 140V.                │"
+    echo "  │     Good for quick tasks. Thinking mode not recommended.        │"
     echo "  │                                                                 │"
-    echo "  │  5) qwen3-coder:30b   [20GB]  ⚠ TIGHT ON RAM                   │"
-    echo "  │     MoE 30B/3.3B active. Top coding + tool calling.             │"
-    echo "  │     256K context. Best for code-heavy OpenClaw workflows.        │"
-    echo "  │                                                                 │"
-    echo "  ├─────────────────────────────────────────────────────────────────┤"
-    echo "  │  CLOUD MODELS (no local GPU needed, requires API key)           │"
-    echo "  ├─────────────────────────────────────────────────────────────────┤"
-    echo "  │                                                                 │"
-    echo "  │  6) Ollama Cloud      [free tier available]                     │"
-    echo "  │     Use kimi-k2.5:cloud, minimax-m2.5:cloud, or glm-5:cloud    │"
-    echo "  │     via Ollama's built-in cloud. No local RAM used.             │"
-    echo "  │                                                                 │"
-    echo "  │  7) Anthropic API     [requires API key from console.anthropic] │"
-    echo "  │     Use Claude as cloud fallback. Best reasoning quality.        │"
-    echo "  │     Set up in ~/.openclaw/openclaw.json after install.           │"
-    echo "  │                                                                 │"
-    echo "  │  8) Remote vLLM/Ollama server on local network                  │"
-    echo "  │     Point OpenClaw to a more powerful machine running vLLM.      │"
-    echo "  │     Configure baseUrl in ~/.openclaw/openclaw.json after install.│"
+    echo "  │  5) Qwen3.5-27B Q4_K_M       [~16GB]                           │"
+    echo "  │     Dense 27B. Best quality for dense models.                   │"
+    echo "  │     Slower TG (~3-4 t/s) but highest reasoning quality.        │"
     echo "  │                                                                 │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
-    echo "  │  9) Skip model pull — Install Ollama only, choose later.        │"
+    echo "  │  CLOUD OPTIONS (configure after install)                        │"
+    echo "  ├─────────────────────────────────────────────────────────────────┤"
+    echo "  │                                                                 │"
+    echo "  │  6) Anthropic API     [requires API key from console.anthropic] │"
+    echo "  │     Use Claude as cloud backend. Best reasoning quality.        │"
+    echo "  │     Configure in OpenClaw settings after install.               │"
+    echo "  │                                                                 │"
+    echo "  │  7) Remote llama.cpp / vLLM server on local network             │"
+    echo "  │     Point OpenClaw to a more powerful machine.                  │"
+    echo "  │     Configure baseUrl in OpenClaw settings after install.       │"
+    echo "  │                                                                 │"
+    echo "  ├─────────────────────────────────────────────────────────────────┤"
+    echo "  │  8) Skip download — I'll add GGUF models manually later.        │"
     echo "  └─────────────────────────────────────────────────────────────────┘"
     echo ""
-    echo -e "${YELLOW}  Note: Options 4-5 use 19-20GB. With OpenClaw + desktop on 32GB shared${NC}"
-    echo -e "${YELLOW}  memory, expect reduced performance. Options 6-8 offload to cloud/remote.${NC}"
+    echo -e "${YELLOW}  Note: Models are downloaded to /shared/models/gguf/${NC}"
+    echo -e "${YELLOW}  You can also manually drop .gguf files there anytime.${NC}"
     echo ""
-    read -p "  Choose [1-9]: " MODEL_CHOICE
+    read -p "  Choose [1-8]: " MODEL_CHOICE
+
+    HF_DL="sudo -u $REAL_USER huggingface-cli download"
+    GGUF_DIR="/shared/models/gguf"
 
     case $MODEL_CHOICE in
         1)
-            MODEL_NAME="qwen3.5:9b"
-            MODEL_SIZE="6.6GB"
+            MODEL_DISPLAY="Qwen3.5-9B Q4_K_M"
+            echo "  Downloading Qwen3.5-9B Q4_K_M (~6GB, this may take a while)..."
+            $HF_DL unsloth/Qwen3.5-9B-UD-GGUF \
+                Qwen3.5-9B-UD-Q4_K_M.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
             ;;
         2)
-            MODEL_NAME="gpt-oss:20b"
-            MODEL_SIZE="12GB"
+            MODEL_DISPLAY="GLM-4.7-Flash Q4_K_M"
+            echo "  Downloading GLM-4.7-Flash Q4_K_M (~18GB, this may take a while)..."
+            $HF_DL unsloth/GLM-4.7-Flash-GGUF \
+                GLM-4.7-Flash-Q4_K_M.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
             ;;
         3)
-            MODEL_NAME="lfm2:24b"
-            MODEL_SIZE="14GB"
+            MODEL_DISPLAY="LFM2-24B-A2B Q5_K_M"
+            echo "  Downloading LFM2-24B-A2B Q5_K_M (~17GB, this may take a while)..."
+            $HF_DL LiquidAI/LFM2-24B-A2B-GGUF \
+                LFM2-24B-A2B-Q5_K_M.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
             ;;
         4)
-            MODEL_NAME="glm-4.7-flash"
-            MODEL_SIZE="19GB"
+            MODEL_DISPLAY="Qwen3.5-4B Q4_K_M"
+            echo "  Downloading Qwen3.5-4B Q4_K_M (~3GB, this may take a while)..."
+            $HF_DL unsloth/Qwen3.5-4B-GGUF \
+                Qwen3.5-4B-Q4_K_M.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
             ;;
         5)
-            MODEL_NAME="qwen3-coder:30b"
-            MODEL_SIZE="20GB"
+            MODEL_DISPLAY="Qwen3.5-27B Q4_K_M"
+            echo "  Downloading Qwen3.5-27B Q4_K_M (~16GB, this may take a while)..."
+            $HF_DL unsloth/Qwen3.5-27B-GGUF \
+                Qwen3.5-27B.Q4_K_M.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
             ;;
         6)
-            MODEL_NAME=""
-            PULLED_MODEL="cloud"
-            echo ""
-            echo -e "${GREEN}  Ollama Cloud selected.${NC}"
-            echo "  When you run 'ollama launch openclaw', select a cloud model"
-            echo "  from the model picker (e.g., kimi-k2.5:cloud, minimax-m2.5:cloud)."
-            echo "  Cloud models have full context length and need no local RAM."
-            ;;
-        7)
-            MODEL_NAME=""
+            MODEL_DISPLAY="Anthropic API"
             PULLED_MODEL="anthropic-api"
             echo ""
             echo -e "${GREEN}  Anthropic API selected as cloud backend.${NC}"
-            echo "  After running 'ollama launch openclaw', edit ~/.openclaw/openclaw.json:"
+            echo "  Configure OpenClaw to use Claude:"
             echo ""
-            echo '  "providers": {'
-            echo '    "anthropic": {'
-            echo '      "apiKey": "sk-ant-YOUR_KEY_HERE"'
+            echo "  In ~/.openclaw/openclaw.json, set:"
+            echo '    "providers": {'
+            echo '      "anthropic": {'
+            echo '        "apiKey": "sk-ant-YOUR_KEY_HERE"'
+            echo '      }'
             echo '    }'
-            echo '  }'
-            echo '  "agents": { "defaults": { "model": {'
-            echo '    "primary": "anthropic/claude-sonnet-4-6"'
-            echo '  }}}'
             echo ""
             echo "  Get your API key from: https://console.anthropic.com"
             ;;
-        8)
-            MODEL_NAME=""
+        7)
+            MODEL_DISPLAY="Remote server"
             PULLED_MODEL="remote-server"
             echo ""
             echo -e "${GREEN}  Remote server selected.${NC}"
-            echo "  After running 'ollama launch openclaw', edit ~/.openclaw/openclaw.json:"
+            echo "  Point OpenClaw to your remote llama.cpp or vLLM server:"
             echo ""
-            echo '  "providers": {'
-            echo '    "remote": {'
-            echo '      "baseUrl": "http://YOUR_SERVER_IP:8000/v1",'
-            echo '      "apiKey": "EMPTY",'
-            echo '      "api": "openai-completions"'
-            echo '    }'
-            echo '  }'
-            echo '  "agents": { "defaults": { "model": {'
-            echo '    "primary": "remote/YOUR_MODEL_NAME",'
-            echo '    "fallback": "ollama/qwen3.5:9b"'
-            echo '  }}}'
+            echo "  The remote server must expose an OpenAI-compatible API."
+            echo "  In OpenClaw config, set baseUrl to:"
+            echo "    http://YOUR_SERVER_IP:8080/v1"
             echo ""
-            echo "  Replace YOUR_SERVER_IP and YOUR_MODEL_NAME with your actual values."
-            echo "  Check available models: curl http://YOUR_SERVER_IP:8000/v1/models"
+            echo "  Start remote llama.cpp with: --host 0.0.0.0"
             ;;
-        9|*)
-            MODEL_NAME=""
+        8|*)
+            MODEL_DISPLAY="none"
             PULLED_MODEL="none"
             ;;
     esac
 
-    if [ -n "$MODEL_NAME" ]; then
-        echo "  Pulling $MODEL_NAME ($MODEL_SIZE, this may take a while)..."
-        sudo -u "$REAL_USER" ollama pull "$MODEL_NAME"
-        PULLED_MODEL="$MODEL_NAME"
-        echo -e "${GREEN}  Ollama installed with $MODEL_NAME.${NC}"
+    # Fix ownership of downloaded files
+    chown -R "$REAL_USER:$REAL_USER" /shared/models
+
+    # Clean up huggingface-cli cache symlinks (it downloads to cache, then symlinks)
+    # Move actual files to gguf dir if they're symlinks
+    for f in "$GGUF_DIR"/*.gguf; do
+        if [ -L "$f" ]; then
+            real_file=$(readlink -f "$f")
+            rm "$f"
+            mv "$real_file" "$f"
+            chown "$REAL_USER:$REAL_USER" "$f"
+        fi
+    done
+
+    if [ "$PULLED_MODEL" = "local" ]; then
+        echo -e "${GREEN}  Downloaded $MODEL_DISPLAY to $GGUF_DIR${NC}"
     elif [ "$PULLED_MODEL" = "none" ]; then
-        echo -e "${GREEN}  Ollama installed. No model pulled.${NC}"
-        echo "  Pull a model later with: ollama pull qwen3.5:9b"
+        echo -e "${GREEN}  llama.cpp installed. No model downloaded.${NC}"
+        echo "  Download models later from https://huggingface.co"
+        echo "  Place .gguf files in /shared/models/gguf/"
+        echo "  Or use: huggingface-cli download <repo> <file> --local-dir /shared/models/gguf/"
     fi
 
     echo ""
-    echo "  To launch OpenClaw (Ollama 0.17+ handles installation automatically):"
-    echo "    ollama launch openclaw"
-    echo ""
-    echo "  To test Vulkan GPU acceleration:"
-    echo "    OLLAMA_VULKAN=1 ollama serve"
+    echo "  ┌─────────────────────────────────────────────────────────────────┐"
+    echo "  │  Quick Start                                                    │"
+    echo "  ├─────────────────────────────────────────────────────────────────┤"
+    echo "  │                                                                 │"
+    echo "  │  Launch a model:    ~/run-model.sh                              │"
+    echo "  │  Web UI:            http://127.0.0.1:8080                       │"
+    echo "  │  API endpoint:      http://127.0.0.1:8080/v1/chat/completions   │"
+    echo "  │  Benchmark:         ~/llama.cpp/build/bin/llama-bench -m <model> │"
+    echo "  │                                                                 │"
+    echo "  │  Add models:        Drop .gguf files into /shared/models/gguf/  │"
+    echo "  │  Download models:   huggingface-cli download <repo> <file>      │"
+    echo "  │                     --local-dir /shared/models/gguf/            │"
+    echo "  │                                                                 │"
+    echo "  │  OpenClaw:          Point to http://127.0.0.1:8080              │"
+    echo "  │                     (same OpenAI-compatible API as Ollama)      │"
+    echo "  └─────────────────────────────────────────────────────────────────┘"
 else
     PULLED_MODEL="skipped"
-    echo "  Skipping AI tools. You can install later with:"
-    echo "    curl -fsSL https://ollama.com/install.sh | sh"
-    echo "    ollama pull qwen3.5:9b        # local model"
-    echo "    ollama launch openclaw         # starts OpenClaw"
+    echo "  Skipping AI tools. You can install later:"
     echo ""
-    echo "  Or use cloud models (no local RAM needed):"
-    echo "    ollama launch openclaw --model kimi-k2.5:cloud"
+    echo "  # Install build tools and build llama.cpp"
+    echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel shaderc"
+    echo "  git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp"
+    echo "  cd ~/llama.cpp"
+    echo "  cmake -B build -DGGML_VULKAN=ON"
+    echo "  cmake --build build --config Release -j\$(nproc)"
+    echo ""
+    echo "  # Download a model"
+    echo "  pip install huggingface-hub"
+    echo "  huggingface-cli download unsloth/Qwen3.5-9B-UD-GGUF Qwen3.5-9B-UD-Q4_K_M.gguf \\"
+    echo "    --local-dir /shared/models/gguf/"
+    echo ""
+    echo "  # Run it"
+    echo "  ~/run-model.sh"
 fi
 echo ""
 
@@ -372,24 +579,26 @@ echo "  [✓] Handheld Daemon (HHD) installed"
 echo "  [✓] WiFi sleep fix installed (D3Cold + module reload)"
 echo "  [✓] Hibernate disabled"
 if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
+    echo "  [✓] llama.cpp built with Vulkan GPU acceleration"
+    echo "  [✓] Model launcher installed: ~/run-model.sh"
     case $PULLED_MODEL in
-        cloud)
-            echo "  [✓] Ollama installed (cloud model selected)"
+        local)
+            echo "  [✓] Downloaded $MODEL_DISPLAY to /shared/models/gguf/"
             ;;
         anthropic-api)
-            echo "  [✓] Ollama installed (Anthropic API — configure key in openclaw.json)"
+            echo "  [✓] Anthropic API selected — configure key in OpenClaw settings"
             ;;
         remote-server)
-            echo "  [✓] Ollama installed (remote server — configure baseUrl in openclaw.json)"
+            echo "  [✓] Remote server selected — configure baseUrl in OpenClaw settings"
             ;;
         none)
-            echo "  [✓] Ollama installed (no model pulled yet)"
-            ;;
-        *)
-            echo "  [✓] Ollama installed with $PULLED_MODEL"
+            echo "  [✓] No model downloaded yet — add .gguf files to /shared/models/gguf/"
             ;;
     esac
-    echo "  To start OpenClaw: ollama launch openclaw"
+    echo ""
+    echo "  To start:  ~/run-model.sh"
+    echo "  Web UI:    http://127.0.0.1:8080"
+    echo "  API:       http://127.0.0.1:8080/v1/chat/completions"
 fi
 echo ""
 echo -e "${YELLOW}After reboot, verify:${NC}"
@@ -398,6 +607,10 @@ echo "  2. Sleep/wake works and WiFi reconnects"
 echo "  3. Sound plays through speakers"
 echo "  4. GPU driver: lspci -k | grep -EA3 'VGA|3D|Display'"
 echo "  5. Switch to Gaming Mode and test Steam"
+if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
+    echo "  6. Run ~/run-model.sh and test AI inference"
+    echo "  7. Monitor GPU usage: nvtop (intel_gpu_top does NOT work on xe driver)"
+fi
 echo ""
 echo -e "${YELLOW}If WiFi still dies after sleep:${NC}"
 echo "  Method A (D3Cold) is active. If it doesn't help,"

@@ -25,8 +25,9 @@ If you just want to get going:
 
 1. Read the [Installation Guide](docs/INSTALL.md) — covers BIOS, partitioning, Ventoy, and dual boot setup
 2. Run the [Post-Install Script](scripts/claw8-post-install.sh) — automates controller, WiFi fix, GPU driver, and AI setup with llama.cpp + Vulkan
-3. Use the [Model Download Scripts](docs/DOWNLOAD_MODELS.md) — fast parallel downloads of safetensors and GGUF models from Hugging Face
-4. Check the [Troubleshooting Guide](docs/TROUBLESHOOTING.md) if something goes wrong
+3. Use [run-model.sh](scripts/run-model.sh) to launch models — auto-discovers GGUF files, configures reasoning and context automatically
+4. Use the [Model Download Scripts](docs/DOWNLOAD_MODELS.md) — fast parallel downloads of safetensors and GGUF models from Hugging Face
+5. Check the [Troubleshooting Guide](docs/TROUBLESHOOTING.md) if something goes wrong
 
 ```bash
 # After first boot into Nobara, download and run:
@@ -63,7 +64,13 @@ Both expose the same OpenAI-compatible API (`/v1/chat/completions`), so OpenClaw
 
 ## Model Launcher
 
-The post-install script installs `~/run-model.sh` — an interactive launcher that auto-discovers GGUF models in `/shared/models/gguf/`:
+The `run-model.sh` script is an interactive launcher that auto-discovers GGUF models in `/shared/models/gguf/`. It is installed automatically by the post-install script, or you can set it up manually:
+
+```bash
+# Copy from the repo
+cp scripts/run-model.sh ~/run-model.sh
+chmod +x ~/run-model.sh
+```
 
 ```
 $ ~/run-model.sh
@@ -241,18 +248,19 @@ cd ~/llama.cpp
 cmake -B build -DGGML_VULKAN=ON
 cmake --build build --config Release -j$(nproc)
 
-# Verify Vulkan is detected
-./build/bin/llama-bench --list-devices
+# Set up model directory and launcher
+sudo mkdir -p /shared/models/gguf
+sudo chown $USER:$USER /shared/models/gguf
+cp scripts/run-model.sh ~/run-model.sh
+chmod +x ~/run-model.sh
 
-# Run a model
-./build/bin/llama-server \
-  -m /shared/models/gguf/YOUR_MODEL.gguf \
-  -ngl 99 -t 8 -c 8192
+# Download a model
+pip install huggingface-hub
+huggingface-cli download unsloth/Qwen3.5-9B-UD-GGUF Qwen3.5-9B-UD-Q4_K_M.gguf \
+  --local-dir /shared/models/gguf/
 
-# Benchmark
-./build/bin/llama-bench \
-  -m /shared/models/gguf/YOUR_MODEL.gguf \
-  -ngl 99 -t 8
+# Launch it
+~/run-model.sh
 ```
 
 **Common build issues on Nobara:**

@@ -67,11 +67,10 @@ mapfile -t MODELS < <(find "$MODEL_DIR" -maxdepth 1 -name "*.gguf" -not -name ".
 if [ ${#MODELS[@]} -eq 0 ]; then
     echo "No .gguf models found in $MODEL_DIR"
     echo ""
-    echo "Download models from https://huggingface.co and place .gguf files in $MODEL_DIR"
-    echo "Example:"
-    echo "  pip install huggingface-hub"
-    echo "  huggingface-cli download unsloth/Qwen3.5-9B-UD-GGUF Qwen3.5-9B-UD-Q4_K_M.gguf \\"
-    echo "    --local-dir $MODEL_DIR"
+    echo "Download models using the fast downloader:"
+    echo "  scripts/download_model_fast.sh unsloth/Qwen3.5-9B-UD-GGUF --gguf Q4_K_M"
+    echo ""
+    echo "Or manually from https://huggingface.co — place .gguf files in $MODEL_DIR"
     exit 1
 fi
 

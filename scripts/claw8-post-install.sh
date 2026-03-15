@@ -288,7 +288,7 @@ mapfile -t MODELS < <(find "$MODEL_DIR" -maxdepth 1 -name "*.gguf" -not -name ".
 
 if [ ${#MODELS[@]} -eq 0 ]; then
     echo "No .gguf models found in $MODEL_DIR"
-    echo "Download models from https://huggingface.co and place .gguf files in $MODEL_DIR"
+    echo "Download models and place .gguf files in $MODEL_DIR"
     exit 1
 fi
 

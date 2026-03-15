@@ -254,10 +254,8 @@ sudo chown $USER:$USER /shared/models/gguf
 cp scripts/run-model.sh ~/run-model.sh
 chmod +x ~/run-model.sh
 
-# Download a model
-pip install huggingface-hub
-huggingface-cli download unsloth/Qwen3.5-9B-UD-GGUF Qwen3.5-9B-UD-Q4_K_M.gguf \
-  --local-dir /shared/models/gguf/
+# Download a model (uses parallel download)
+scripts/download_model_fast.sh unsloth/Qwen3.5-9B-UD-GGUF --gguf Q4_K_M
 
 # Launch it
 ~/run-model.sh

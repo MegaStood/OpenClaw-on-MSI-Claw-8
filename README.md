@@ -25,7 +25,8 @@ If you just want to get going:
 
 1. Read the [Installation Guide](docs/INSTALL.md) — covers BIOS, partitioning, Ventoy, and dual boot setup
 2. Run the [Post-Install Script](scripts/claw8-post-install.sh) — automates controller, WiFi fix, GPU driver, and AI setup
-3. Check the [Troubleshooting Guide](docs/TROUBLESHOOTING.md) if something goes wrong
+3. Use the [Model Download Scripts](docs/DOWNLOAD_MODELS.md) — fast parallel downloads of safetensors and GGUF models from Hugging Face
+4. Check the [Troubleshooting Guide](docs/TROUBLESHOOTING.md) if something goes wrong
 
 ```bash
 # After first boot into Nobara, download and run:

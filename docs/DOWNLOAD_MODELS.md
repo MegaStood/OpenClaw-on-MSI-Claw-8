@@ -28,8 +28,6 @@ On first run, the `.sh` script creates a `.dl-model-venv` virtual environment ne
 | Safetensors | `/shared/models/<model-name>/` |
 | GGUF | `/shared/models/gguf/` (flat, no subdirectories) |
 
-> **Note:** `/shared/models` is a symlink to `/home/richardlee/models` — they point to the same location.
-
 ## Usage
 
 ```

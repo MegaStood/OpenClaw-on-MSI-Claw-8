@@ -178,6 +178,12 @@ echo ""
 # PHASE 6: Install Ollama + OpenClaw (optional)
 # ============================================================
 echo -e "${YELLOW}[6/7] AI tools setup...${NC}"
+
+# Create model directories with correct ownership
+echo "  Setting up model directories..."
+mkdir -p /shared/models/gguf
+chown -R "$REAL_USER:$REAL_USER" /shared/models
+
 read -p "  Install Ollama + OpenClaw for AI assistant? (y/n): " INSTALL_AI
 
 if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then

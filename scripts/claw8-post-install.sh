@@ -384,25 +384,25 @@ RUNMODEL
     echo "  │  LOCAL MODELS (downloaded as GGUF, run with Vulkan GPU)         │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
-    echo "  │  1) Qwen3.5-9B Q4_K_M        [~6GB]  ★ RECOMMENDED             │"
-    echo "  │     Dense 9B. Tool calling, thinking mode.                      │"
-    echo "  │     Best all-rounder for 32GB. Full GPU offload.                │"
+    echo "  │  1) Qwen3.5-35B-A3B Q4_K_M   [~21GB]  ★ RECOMMENDED           │"
+    echo "  │     MoE 35B/3B active. Hybrid SSM+Attention architecture.      │"
+    echo "  │     Best 32k context scaling. Thinking mode. ~9.5 t/s.         │"
     echo "  │                                                                 │"
-    echo "  │  2) GLM-4.7-Flash Q4_K_M     [~18GB]                           │"
-    echo "  │     MoE 30B/3B active. Best agentic coding (59% SWE-bench).    │"
-    echo "  │     Tool calling + thinking. Proven ~13 t/s on Arc 140V.       │"
+    echo "  │  2) LFM2-24B-A2B Q5_K_M      [~17GB]  ⚡ FASTEST              │"
+    echo "  │     MoE 24B/2B active. Liquid AI hybrid architecture.          │"
+    echo "  │     Fastest on Arc 140V at ~20 t/s. Good tool dispatch.        │"
     echo "  │                                                                 │"
-    echo "  │  3) LFM2-24B-A2B Q5_K_M      [~17GB]                           │"
-    echo "  │     MoE 24B/2B active. Liquid AI hybrid architecture.           │"
-    echo "  │     Designed for on-device. Fast MoE inference. Tool calling.   │"
+    echo "  │  3) GLM-4.7-Flash Q4_K_M     [~18GB]                           │"
+    echo "  │     MoE 30B/3B active. Best thinking mode for reasoning.       │"
+    echo "  │     Tool calling + thinking. ~12 t/s on Arc 140V.              │"
     echo "  │                                                                 │"
-    echo "  │  4) Qwen3.5-4B Q4_K_M        [~3GB]  ⚡ FASTEST                │"
-    echo "  │     Dense 4B. Lightweight, ~15 t/s on Arc 140V.                │"
+    echo "  │  4) Qwen3.5-4B Q4_K_M        [~3GB]   ⚡ SMALLEST             │"
+    echo "  │     Dense 4B. Lightweight, ~11.5 t/s on Arc 140V.              │"
     echo "  │     Good for quick tasks. Thinking mode not recommended.        │"
     echo "  │                                                                 │"
-    echo "  │  5) Qwen3.5-27B Q4_K_M       [~16GB]                           │"
-    echo "  │     Dense 27B. Best quality for dense models.                   │"
-    echo "  │     Slower TG (~3-4 t/s) but highest reasoning quality.        │"
+    echo "  │  5) Crow-4B-Opus-4.6 Q5_K_M  [~3GB]   🧠 DISTILLED           │"
+    echo "  │     Dense 4B. Claude Opus 4.6 distilled reasoning.             │"
+    echo "  │     Reduced thinking loops vs base Qwen3.5-4B. ~11.5 t/s.     │"
     echo "  │                                                                 │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │  CLOUD OPTIONS (configure after install)                        │"
@@ -430,26 +430,26 @@ RUNMODEL
 
     case $MODEL_CHOICE in
         1)
-            MODEL_DISPLAY="Qwen3.5-9B Q4_K_M"
-            echo "  Downloading Qwen3.5-9B Q4_K_M (~6GB, this may take a while)..."
-            $HF_DL unsloth/Qwen3.5-9B-UD-GGUF \
-                Qwen3.5-9B-UD-Q4_K_M.gguf \
+            MODEL_DISPLAY="Qwen3.5-35B-A3B Q4_K_M"
+            echo "  Downloading Qwen3.5-35B-A3B Q4_K_M (~21GB, this may take a while)..."
+            $HF_DL unsloth/Qwen3.5-35B-A3B-GGUF \
+                Qwen3.5-35B-A3B-Q4_K_M.gguf \
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
         2)
-            MODEL_DISPLAY="GLM-4.7-Flash Q4_K_M"
-            echo "  Downloading GLM-4.7-Flash Q4_K_M (~18GB, this may take a while)..."
-            $HF_DL unsloth/GLM-4.7-Flash-GGUF \
-                GLM-4.7-Flash-Q4_K_M.gguf \
-                --local-dir "$GGUF_DIR"
-            PULLED_MODEL="local"
-            ;;
-        3)
             MODEL_DISPLAY="LFM2-24B-A2B Q5_K_M"
             echo "  Downloading LFM2-24B-A2B Q5_K_M (~17GB, this may take a while)..."
             $HF_DL LiquidAI/LFM2-24B-A2B-GGUF \
                 LFM2-24B-A2B-Q5_K_M.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
+            ;;
+        3)
+            MODEL_DISPLAY="GLM-4.7-Flash Q4_K_M"
+            echo "  Downloading GLM-4.7-Flash Q4_K_M (~18GB, this may take a while)..."
+            $HF_DL unsloth/GLM-4.7-Flash-GGUF \
+                GLM-4.7-Flash-Q4_K_M.gguf \
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
@@ -462,10 +462,10 @@ RUNMODEL
             PULLED_MODEL="local"
             ;;
         5)
-            MODEL_DISPLAY="Qwen3.5-27B Q4_K_M"
-            echo "  Downloading Qwen3.5-27B Q4_K_M (~16GB, this may take a while)..."
-            $HF_DL unsloth/Qwen3.5-27B-GGUF \
-                Qwen3.5-27B.Q4_K_M.gguf \
+            MODEL_DISPLAY="Crow-4B-Opus-4.6 Q5_K_M"
+            echo "  Downloading Crow-4B-Opus-4.6-Distill Q5_K_M (~3GB, this may take a while)..."
+            $HF_DL crownelius/Crow-4B-Opus-4.6-Distill-Heretic_Qwen3.5 \
+                Crow-4B-Opus-4.6-Distill-Heretic_Qwen3.5.Q5_K_M.gguf \
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
@@ -556,9 +556,7 @@ else
     echo "  cmake --build build --config Release -j\$(nproc)"
     echo ""
     echo "  # Download a model"
-    echo "  pip install huggingface-hub"
-    echo "  huggingface-cli download unsloth/Qwen3.5-9B-UD-GGUF Qwen3.5-9B-UD-Q4_K_M.gguf \\"
-    echo "    --local-dir /shared/models/gguf/"
+    echo "  scripts/download_model_fast.sh unsloth/Qwen3.5-35B-A3B-GGUF --gguf Q4_K_M"
     echo ""
     echo "  # Run it"
     echo "  ~/run-model.sh"

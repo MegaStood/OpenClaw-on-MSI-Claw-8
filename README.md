@@ -97,56 +97,68 @@ Features:
 
 ## Real-World Benchmarks (Arc 140V + Vulkan)
 
-All benchmarks measured on the Claw 8 AI+ with llama.cpp built with Vulkan, 8 threads, using `llama-bench`:
+All benchmarks measured on the Claw 8 AI+ with llama.cpp built with Vulkan, 8 threads, `ngl=99`, using `llama-bench`. Numbers are confirmed across multiple runs.
 
-### Qwen3.5-4B (Q4_K_XL, 2.7GB) — Full GPU Offload
+### Complete Benchmark — All Models, All Context Sizes
+
+| Model | Active | Size | PP @512 | PP @8k | PP @32k | TG |
+|-------|--------|------|---------|--------|---------|-----|
+| Qwen3.5-4B (dense) | 4B | 2.70 GB | **629** | **445** | **263** | 11.5 |
+| **LFM2-24B-A2B** | **2B MoE** | **15.75 GB** | 394 | 232 | 153 | **20.7** |
+| Qwen3.5-35B-A3B | 3B MoE | 20.70 GB | 308 | 200 | 153 | 9.5 |
+| GLM-4.7-Flash | 3B MoE | 17.05 GB | 304 | 118 | 43 | 11.9 |
+
+### PP Slowdown from 512 → 32k (Architecture Impact)
+
+| Model | Architecture | Slowdown | Why |
+|-------|-------------|----------|-----|
+| Qwen3.5-35B | Hybrid SSM + Attention | **2.0x** (best) | Only 1 in 4 layers uses attention |
+| Qwen3.5-4B | Hybrid SSM + Attention | 2.4x | Same architecture, less memory pressure |
+| LFM2-24B | Hybrid Convolution + 10 GQA | 2.6x | 30 conv + 10 attention layers |
+| GLM-4.7-Flash | All Attention (47 layers MLA) | **7.1x** (worst) | Every layer pays quadratic cost |
+
+Hybrid architectures (SSM/convolution + sparse attention) scale dramatically better with context length than all-attention models on memory-constrained hardware.
+
+### Vulkan vs CPU Comparison (Qwen3.5-4B)
 
 | Config | PP (tok/s) | TG (tok/s) |
 |---|---|---|
-| Vulkan ngl=99, 8 threads | **652.26** | **13.06** |
-| Vulkan ngl=99, 2 threads | 207.60 | 12.94 |
-| CPU only, 8 threads | 420.58 | 9.23 |
-| CPU only, 2 threads | 273.70 | 5.38 |
+| Vulkan ngl=99, 8 threads | **629** | **11.5** |
+| Vulkan ngl=99, 2 threads | 208 | 12.9 |
+| CPU only, 8 threads | 421 | 9.2 |
+| CPU only, 2 threads | 274 | 5.4 |
 
 Key takeaways:
-- Vulkan gives **~40% faster TG** over CPU (13 vs 9.2 tok/s)
+- Vulkan gives **~40% faster TG** over CPU
 - Thread count dramatically affects PP (3x difference) but not TG
-- TG is memory-bandwidth bound; PP is compute-bound
-
-### GLM-4.7-Flash (Q4_K_M, 18GB) — Full GPU Offload
-
-| Config | PP (tok/s) | TG (tok/s) |
-|---|---|---|
-| Vulkan ngl=99, 8 threads (bench) | **308.76** | **14.18** |
-| Vulkan ngl=99, 8 threads (server, warm) | 3.10 | 12.97 |
-| Vulkan ngl=99, 8 threads (server, cold) | 1.97 | 11.36 |
-
-Key takeaways:
-- 30B MoE model running entirely on iGPU at **14 tok/s** — very usable for chat
-- Server PP is slower than bench due to 4 parallel slots competing for resources
-- MoE with 3B active params generates tokens **faster** than the dense 4B model
+- TG is memory-bandwidth bound (136.5 GB/s LPDDR5x); PP is compute-bound
 
 ### GPU Memory Usage
 
 Total iGPU shared memory: ~23.7 GB (from 32GB system RAM)
 
-| Model | Weight Size | KV Cache (8k) | Free After Load | Max Context |
-|---|---|---|---|---|
-| Qwen3.5-4B (2.7GB) | 3.7 GB | 0.3 GB | ~19.5 GB | 32k+ easily |
-| Qwen3.5-9B (6GB) | ~7 GB | ~0.5 GB | ~16 GB | 32k |
-| LFM2-24B MoE (17GB) | ~18 GB | ~0.4 GB | ~5 GB | 8-16k |
-| GLM-4.7-Flash MoE (18GB) | 18.0 GB | 0.4 GB | 5.2 GB | 16-32k |
-| Qwen3.5-35B MoE (22GB) | ~23 GB | — | Won't fit | CPU only |
+| Model | Weight Size | Free After Load | Max Context (GPU) |
+|---|---|---|---|
+| Qwen3.5-4B (2.7GB) | 3.7 GB | ~19.5 GB | 32k+ easily |
+| Qwen3.5-9B (6GB) | ~7 GB | ~16 GB | 32k |
+| LFM2-24B MoE (17GB) | ~18 GB | ~5 GB | 8-32k |
+| GLM-4.7-Flash MoE (18GB) | 18.0 GB | 5.2 GB | 16-32k |
+| Qwen3.5-35B MoE (22GB) | ~23 GB | ~1 GB | 8-32k (use `--parallel 1`) |
 
 ## Model Recommendations for OpenClaw
 
-| Model | Architecture | Total / Active | File Size | Est. TG | Best For |
-|---|---|---|---|---|---|
-| Qwen3.5-4B Q4_K_M | Dense | 4B / 4B | 3GB | ~15 tok/s | Quick tasks, fastest response |
-| Qwen3.5-9B Q4_K_M ★ | Dense | 9B / 9B | 6GB | ~10-12 tok/s | Daily all-rounder, full GPU offload |
-| LFM2-24B-A2B Q5_K_M | MoE | 24B / 2B | 17GB | ~10-14 tok/s | On-device MoE, Liquid AI |
-| GLM-4.7-Flash Q4_K_M | MoE | 30B / 3B | 18GB | ~13-14 tok/s | Agentic coding, tool calling |
-| Qwen3.5-27B Q4_K_M | Dense | 27B / 27B | 16GB | ~3-4 tok/s | Best reasoning, slower |
+| Model | Architecture | Active | Size | TG | PP @32k | Best For |
+|---|---|---|---|---|---|---|
+| **LFM2-24B-A2B Q5_K_M ★** | **Hybrid Conv+GQA MoE** | **2B** | **16GB** | **20.7** | **153** | **Fastest local, good tool dispatch** |
+| Qwen3.5-4B Q4_K_XL | Hybrid SSM+Attn dense | 4B | 3GB | 11.5 | 263 | Quick tasks, fastest PP |
+| GLM-4.7-Flash Q4_K_M | All-Attention MoE | 3B | 17GB | 11.9 | 43 | Thinking mode, agentic coding |
+| Qwen3.5-35B-A3B Q4_K_XL | Hybrid SSM+Attn MoE | 3B | 21GB | 9.5 | 153 | Best 32k PP scaling, thinking mode |
+
+**Choosing a model:**
+- **Speed priority:** LFM2-24B at 20.7 tok/s — fastest by far, 80% single-tool accuracy, but only 26% multi-step chain success
+- **Reasoning priority:** Qwen3.5-35B with thinking mode — slower TG but better multi-step accuracy, excellent PP scaling at 32k
+- **Quick tasks:** Qwen3.5-4B — tiny footprint, fastest PP at all context sizes, but disable thinking mode
+- **Offload complex work:** Use DGX Spark or cloud API for heavy reasoning, keep local model for fast dispatch
 
 **GGUF quantization notes:**
 - **Q4_K_M** — best balance of quality and speed, most optimized codepath in llama.cpp

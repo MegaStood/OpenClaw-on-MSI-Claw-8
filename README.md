@@ -81,7 +81,7 @@ Available models:
   2) GLM-4.7-Flash-Q4_K_M.gguf                              [ 18G] reasoning ON  | ctx 32k
   3) LFM2-24B-A2B-Q5_K_M.gguf                               [ 17G] reasoning ON  | ctx 32k
   4) Qwen3.5-4B-UD-Q4_K_XL.gguf                             [2.8G] reasoning OFF | ctx 8k
-  5) Qwen3.5-9B-UD-Q4_K_XL.gguf                             [5.6G] reasoning ON  | ctx 32k
+  5) Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf                         [ 21G] reasoning ON  | ctx 32k
 
 Select model (1-5):
 ```

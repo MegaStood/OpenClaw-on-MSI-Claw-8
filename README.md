@@ -26,8 +26,9 @@ If you just want to get going:
 1. Read the [Installation Guide](docs/INSTALL.md) — covers BIOS, partitioning, Ventoy, and dual boot setup
 2. Run the [Post-Install Script](scripts/claw8-post-install.sh) — automates controller, WiFi fix, GPU driver, and AI setup with llama.cpp + Vulkan
 3. Use [run-model.sh](scripts/run-model.sh) to launch models — auto-discovers GGUF files, configures reasoning and context automatically
-4. Use the [Model Download Scripts](docs/DOWNLOAD_MODELS.md) — fast parallel downloads of safetensors and GGUF models from Hugging Face
-5. Check the [Troubleshooting Guide](docs/TROUBLESHOOTING.md) if something goes wrong
+4. Follow the [OpenClaw Setup Guide](docs/OPENCLAW_SETUP.md) — full agent installation, skills, security, and three-route configuration
+5. Use the [Model Download Scripts](docs/DOWNLOAD_MODELS.md) — fast parallel downloads of safetensors and GGUF models from Hugging Face
+6. Check the [Troubleshooting Guide](docs/TROUBLESHOOTING.md) if something goes wrong
 
 ```bash
 # After first boot into Nobara, download and run:
@@ -297,7 +298,11 @@ OpenClaw supports three authentication methods for Claude. The Claude Agent SDK 
 
 For full Claude + OpenClaw setup details, see the [official Anthropic provider docs](https://docs.openclaw.ai/providers/anthropic).
 
+For the complete installation walkthrough, skills recommendations, security hardening, auto-start configuration, and agent personality setup, see our [OpenClaw Setup Guide](docs/OPENCLAW_SETUP.md).
+
 Works with llama.cpp, Ollama, vLLM, or any OpenAI-compatible endpoint on your network.
+
+> **Note on NemoClaw:** [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw) is an OpenClaw plugin that adds sandboxed execution via NVIDIA OpenShell. It requires Ubuntu + Docker + NVIDIA GPU, so it's **not applicable** to the MSI Claw (Intel Arc 140V). It may be useful on DGX Spark deployments. See the [comparison in our setup guide](docs/OPENCLAW_SETUP.md#nemoclaw-vs-openclaw).
 
 ## BitLocker Warning
 

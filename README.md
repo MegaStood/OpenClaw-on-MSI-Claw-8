@@ -208,39 +208,94 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 
 ### Remote Setup (DGX Spark cluster)
 
-Start vLLM on the Spark with tool calling enabled:
+For detailed setup of vLLM on single or dual DGX Sparks, see [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) — the community-maintained Docker configuration for running vLLM on DGX Spark clusters. It handles container building, Ray cluster setup, RDMA/InfiniBand networking, and model downloading.
+
+Quick start with a recipe:
+
+```bash
+git clone https://github.com/eugr/spark-vllm-docker.git
+cd spark-vllm-docker
+
+# Build and distribute container across cluster
+./build-and-copy.sh -c
+
+# Run a recipe (e.g., Qwen3.5-122B on dual Sparks)
+./run-recipe.sh Qwen3.5-122B-A10B-FP8 --setup
+```
+
+Or manually with tool calling enabled for OpenClaw:
 
 ```bash
 vllm serve Qwen/Qwen3.5-122B-A10B-FP8 \
   --tensor-parallel 2 \
+  --distributed-executor-backend ray \
   --max-model-len 128000 \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_coder \
+  --enable-prefix-caching \
+  --load-format fastsafetensors \
   --host 0.0.0.0 --port 8888
 ```
 
 ### OpenClaw Configuration
 
-```yaml
-# ~/.config/openclaw/config.yml
-providers:
-  - id: local
-    type: openai
-    baseURL: http://127.0.0.1:8080/v1
-    apiKey: no-key
-  - id: spark
-    type: openai
-    baseURL: http://192.168.50.121:8888/v1
-    apiKey: no-key
-  - id: claude
-    type: anthropic
-    apiKey: sk-ant-YOUR_KEY_HERE
+OpenClaw supports three authentication methods for Claude. The Claude Agent SDK currently only supports API keys — Max subscription billing is not available for programmatic calls.
 
-agents:
-  - id: default
-    model: spark/qwen3.5-122b
-    fallback: local/lfm2-24b
+**Claude subscription options:**
+
+| Plan | Price | Use with OpenClaw | Notes |
+|------|-------|-------------------|-------|
+| Anthropic API key | Pay-per-token | Direct API access | ~$3/$15 per M tokens (Sonnet), full control |
+| Claude Max 5x | $100/mo | Via Claude Code CLI subprocess | 5x Pro quota, 7-day rolling cap |
+| Claude Max 20x | $200/mo | Via Claude Code CLI subprocess | 20x Pro quota, best for heavy use |
+
+**Important:** OAuth tokens from Pro/Max subscriptions are banned in third-party tools since January 2026. Use an API key for direct OpenClaw integration, or use the Claude Code CLI subprocess path (which is permitted).
+
+**Full three-route configuration:**
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-ant-YOUR_KEY_HERE"
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-6",
+        "fallbacks": ["spark/qwen3.5-122b", "local/lfm2-24b"]
+      },
+      "models": {
+        "anthropic/claude-sonnet-4-6": {
+          "params": {
+            "cacheRetention": "short"
+          }
+        }
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "spark": {
+        "baseUrl": "http://192.168.50.121:8888/v1",
+        "apiKey": "no-key",
+        "api": "openai-completions"
+      },
+      "local": {
+        "baseUrl": "http://127.0.0.1:8080/v1",
+        "apiKey": "no-key",
+        "api": "openai-completions"
+      }
+    }
+  }
+}
 ```
+
+**Routing behavior:**
+- Claude (coral route) handles complex reasoning, architecture, refactoring — falls back to Spark when weekly quota is exhausted
+- Spark (blue route) handles routine tasks — tests, formatting, simple features — free and unlimited
+- Local llama.cpp (teal route) handles fast dispatch and offline work — no network needed
+
+For full Claude + OpenClaw setup details, see the [official Anthropic provider docs](https://docs.openclaw.ai/providers/anthropic).
 
 Works with llama.cpp, Ollama, vLLM, or any OpenAI-compatible endpoint on your network.
 
@@ -308,10 +363,12 @@ scripts/download_model_fast.sh unsloth/Qwen3.5-9B-UD-GGUF --gguf Q4_K_M
 - [Nobara Downloads](https://nobaraproject.org/download.html)
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) — local LLM inference with Vulkan GPU support
 - [Hugging Face GGUF Models](https://huggingface.co/models?library=gguf) — pre-quantized models ready to use
+- [spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) — community Docker setup for vLLM on DGX Spark clusters
+- [OpenClaw](https://github.com/openclaw/openclaw) — self-hosted AI agent orchestration
+- [OpenClaw Anthropic Provider Docs](https://docs.openclaw.ai/providers/anthropic) — Claude API key and Agent SDK setup
 - [winesapOS MSI Claw support](https://github.com/winesapOS/winesapOS)
 - [CachyOS Handheld](https://github.com/CachyOS/CachyOS-Handheld) (alternative distro)
 - [HHD (Handheld Daemon)](https://github.com/hhd-dev/hhd)
-- [OpenClaw](https://github.com/openclaw/openclaw)
 - [Ollama](https://ollama.com) (alternative backend — currently CPU-only on Intel iGPU)
 - [MSI Claw A1M Reddit Guide](https://www.reddit.com/r/MSIClaw/comments/1lnv5m9/) (Meteor Lake — use for reference only)
 - [ReignOS](https://github.com/reignstudios/ReignOS) (alternative distro born from MSI Claw work)

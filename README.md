@@ -179,9 +179,21 @@ Total iGPU shared memory: ~23.7 GB (from 32GB system RAM)
 | WiFi chip | Intel PCH CNVi (8086:7e40) | Intel BE201 (8086:a840) |
 | GPU device ID | Meteor Lake Xe-LPG | 8086:64a0 (Xe2 Arc 140V) |
 
-## OpenClaw + llama.cpp Setup
+## OpenClaw Three-Route Architecture
 
-llama.cpp serves the same OpenAI-compatible API as Ollama. Point OpenClaw to `http://127.0.0.1:8080`:
+OpenClaw on the Claw uses three inference backends, routing tasks by complexity:
+
+![OpenClaw Architecture](docs/openclaw-architecture.svg)
+
+| Route | Backend | Speed | Use Case |
+|-------|---------|-------|----------|
+| Local llama.cpp | LFM2-24B via Vulkan on Arc 140V | 20 tok/s | Fast dispatch, offline, simple tool calls |
+| DGX Spark | Qwen3.5-122B/397B via vLLM | 26-30 tok/s | Tests, formatting, routine features |
+| Claude Agent SDK | Sonnet 4.6 via Anthropic API | Cloud | Complex bugs, architecture, refactoring |
+
+Fallback logic: if Claude's weekly quota is exhausted, tasks automatically route to the Spark cluster.
+
+### Local Setup (llama.cpp on the Claw)
 
 ```bash
 # Start a model
@@ -194,30 +206,40 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   | python3 -m json.tool
 ```
 
-### Remote Server Setup
+### Remote Setup (DGX Spark cluster)
 
-For heavier models, run inference on a more powerful machine. Start llama.cpp with `--host 0.0.0.0` on the server, then point OpenClaw to it:
+Start vLLM on the Spark with tool calling enabled:
 
-```json
-{
-  "models": {
-    "providers": {
-      "remote": {
-        "baseUrl": "http://YOUR_SERVER_IP:8080/v1",
-        "apiKey": "EMPTY",
-        "api": "openai-completions"
-      }
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "remote/YOUR_MODEL_NAME",
-        "fallback": "local/qwen3.5-9b"
-      }
-    }
-  }
-}
+```bash
+vllm serve Qwen/Qwen3.5-122B-A10B-FP8 \
+  --tensor-parallel 2 \
+  --max-model-len 128000 \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --host 0.0.0.0 --port 8888
+```
+
+### OpenClaw Configuration
+
+```yaml
+# ~/.config/openclaw/config.yml
+providers:
+  - id: local
+    type: openai
+    baseURL: http://127.0.0.1:8080/v1
+    apiKey: no-key
+  - id: spark
+    type: openai
+    baseURL: http://192.168.50.121:8888/v1
+    apiKey: no-key
+  - id: claude
+    type: anthropic
+    apiKey: sk-ant-YOUR_KEY_HERE
+
+agents:
+  - id: default
+    model: spark/qwen3.5-122b
+    fallback: local/lfm2-24b
 ```
 
 Works with llama.cpp, Ollama, vLLM, or any OpenAI-compatible endpoint on your network.

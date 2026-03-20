@@ -56,7 +56,7 @@ get_param_size() {
         return
     fi
     # Fallback: estimate from file size (Q4 ≈ 0.6 GB per 1B params)
-    local file_gb=$(du -BG "$1" | grep -oP '\d+')
+    local file_gb=$(du -BG "$1" | cut -f1 | tr -dc '0-9')
     echo $(( file_gb * 10 / 6 ))
 }
 

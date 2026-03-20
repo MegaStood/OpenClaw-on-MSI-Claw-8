@@ -139,14 +139,14 @@ if [ "$action" = "2" ]; then
 
     # -ngl 99: offload all layers to GPU (Vulkan)
     # -t 8:    use all 8 threads
-    # Runs prompt processing (pp) and text generation (tg) benchmarks
+    # Runs prompt processing (pp), token generation (tg), and combined (pp+tg) benchmarks
     $LLAMA_BENCH \
         -m "$MODEL" \
         -ngl 99 \
         -t 8 \
         -r 2 \
         -p 512,2048,8192,32768 \
-        -n 0 \
+        -n 128,256,512 \
         -pg 512,128 -pg 2048,128 -pg 8192,128
 
     exit 0

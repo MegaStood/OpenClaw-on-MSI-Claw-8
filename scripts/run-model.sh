@@ -108,7 +108,7 @@ MODEL="${MODELS[$((choice-1))]}"
 MODEL_NAME=$(basename "$MODEL")
 PARAMS=$(get_param_size "$MODEL")
 
-# ── Configure reasoning and context ──────────────────────────────────────────
+# ── Configure reasoning, context, and performance ────────────────────────────
 # - Small models (<9B) loop endlessly in thinking mode — disable it
 # - Large models benefit from reasoning for agentic/tool-calling tasks
 # - 32k context needed for OpenClaw tool calling (schemas + history eat tokens)
@@ -124,6 +124,15 @@ else
     MODE_LABEL="reasoning OFF, context 8k"
 fi
 
+# ── Detect MoE models for extra tuning ───────────────────────────────────────
+# MoE models (e.g., 35B-A3B) need --parallel 1 to avoid memory pressure
+# and benefit from larger batch sizes for prefill throughput
+
+MOE_ARGS=""
+if echo "$MODEL_NAME" | grep -qiP '\d+B-A\d+B'; then
+    MOE_ARGS="--parallel 1"
+fi
+
 # ── Kill existing server and launch ──────────────────────────────────────────
 
 pkill -f llama-server 2>/dev/null && sleep 1
@@ -137,14 +146,23 @@ echo "Web UI:  http://127.0.0.1:8080"
 echo "───────────────────────────────────────────────────────────────────────────────"
 echo ""
 
-# -ngl 99: offload all layers to GPU (Vulkan). Without this, runs CPU-only
-# -t 8:    use all 8 threads. Default is 2, which bottlenecks prompt processing
-#          (207 t/s with 2 threads vs 652 t/s with 8 threads on Qwen3.5-4B)
-# -c:      explicit context size. Without this, defaults to model's training context
-#          (e.g., 262k for Qwen3.5) which eats 8GB+ of RAM for KV cache alone
+# -ngl 99:  offload all layers to GPU (Vulkan). Without this, runs CPU-only
+# -t 8:     use all 8 threads. Default is 2, which bottlenecks prompt processing
+#           (207 t/s with 2 threads vs 652 t/s with 8 threads on Qwen3.5-4B)
+# -c:       explicit context size. Without this, defaults to model's training context
+#           (e.g., 262k for Qwen3.5) which eats 8GB+ of RAM for KV cache alone
+# -fa:      flash attention — reduces KV cache memory and speeds up attention compute
+# -b 4096:  larger prompt batch size improves prefill throughput on Vulkan
+# -ub 1024: larger micro-batch for better GPU utilization during prefill
+# --mlock:  prevent model pages from being swapped to disk
 $LLAMA_SERVER \
     -m "$MODEL" \
     -ngl 99 \
     -t 8 \
     -c $CONTEXT \
+    -fa \
+    -b 4096 \
+    -ub 1024 \
+    --mlock \
+    $MOE_ARGS \
     $REASONING_ARGS

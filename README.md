@@ -134,6 +134,27 @@ Key takeaways:
 - Thread count dramatically affects PP (3x difference) but not TG
 - TG is memory-bandwidth bound (136.5 GB/s LPDDR5x); PP is compute-bound
 
+### Performance Tuning (run-model.sh defaults)
+
+The launch script applies these optimizations automatically:
+
+| Flag | Effect | Impact |
+|---|---|---|
+| `-fa` | Flash attention | Reduces KV cache memory, faster attention at long contexts |
+| `-b 4096` | Larger prompt batch size | Better prefill throughput on Vulkan |
+| `-ub 1024` | Larger micro-batch | Better GPU utilization during prefill |
+| `--mlock` | Lock model in RAM | Prevents swap thrashing on large models |
+| `--parallel 1` | Single-slot (MoE only) | Prevents memory pressure on 20GB+ MoE models |
+
+**If PP is still slow on MoE models:** MoE routing on Vulkan has inherent overhead vs CPU. This is a known Vulkan backend limitation — the TG improvement is still worth using GPU. For PP-heavy workloads (long prompts), consider using a dense model like Qwen3.5-4B.
+
+**If TG feels capped at ~10-12 tok/s:** This is the LPDDR5x memory bandwidth ceiling (136.5 GB/s). TG speed is fundamentally limited by how fast weights can be read from memory. Using a smaller quantization (Q4 vs Q5) or a model with fewer active parameters helps.
+
+**Additional tuning to try manually:**
+- Lower context (`-c 8192`) if you don't need 32k — PP scales with context length
+- Use **Q4_K_M** over Q4_K_XL — Q4_K_M has the most optimized codepath in llama.cpp
+- Try `-t 4` (P-cores only) if PP doesn't improve with 8 threads on your workload
+
 ### GPU Memory Usage
 
 Total iGPU shared memory: ~23.7 GB (from 32GB system RAM)

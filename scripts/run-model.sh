@@ -143,7 +143,11 @@ if [ "$action" = "2" ]; then
     $LLAMA_BENCH \
         -m "$MODEL" \
         -ngl 99 \
-        -t 8
+        -t 8 \
+        -r 2 \
+        -npp 512,2048,8192,32768 \
+        -ntg 512,2048,8192,32768 \
+        -npl 1
 
     exit 0
 fi

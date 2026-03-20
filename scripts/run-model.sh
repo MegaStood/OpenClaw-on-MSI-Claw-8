@@ -108,6 +108,46 @@ MODEL="${MODELS[$((choice-1))]}"
 MODEL_NAME=$(basename "$MODEL")
 PARAMS=$(get_param_size "$MODEL")
 
+# ── Action menu: Run or Bench ────────────────────────────────────────────────
+
+LLAMA_BENCH="$HOME/llama.cpp/build/bin/llama-bench"
+
+echo ""
+echo "Selected: $MODEL_NAME (~${PARAMS}B)"
+echo ""
+echo "  1) Run model (start server)"
+echo "  2) Benchmark model (llama-bench)"
+echo ""
+read -p "Action (1-2) [1]: " action
+action="${action:-1}"
+
+if [ "$action" = "2" ]; then
+    # ── Benchmark mode ────────────────────────────────────────────────────────
+    if [ ! -f "$LLAMA_BENCH" ]; then
+        echo "Error: llama-bench not found at $LLAMA_BENCH"
+        echo ""
+        echo "Rebuild llama.cpp — llama-bench is included by default:"
+        echo "  cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON"
+        echo "  cmake --build build --config Release -j\$(nproc)"
+        exit 1
+    fi
+
+    echo ""
+    echo "Benchmarking: $MODEL_NAME"
+    echo "───────────────────────────────────────────────────────────────────────────────"
+    echo ""
+
+    # -ngl 99: offload all layers to GPU (Vulkan)
+    # -t 8:    use all 8 threads
+    # Runs prompt processing (pp) and text generation (tg) benchmarks
+    $LLAMA_BENCH \
+        -m "$MODEL" \
+        -ngl 99 \
+        -t 8
+
+    exit 0
+fi
+
 # ── Configure reasoning and context ──────────────────────────────────────────
 # - Small models (<9B) loop endlessly in thinking mode — disable it
 # - Large models benefit from reasoning for agentic/tool-calling tasks

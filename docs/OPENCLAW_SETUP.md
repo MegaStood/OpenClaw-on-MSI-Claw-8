@@ -214,24 +214,73 @@ Fix any red flags before connecting messaging channels.
 
 ## Step 4: Connect Messaging Channels
 
-### Telegram (simplest to start)
+### Telegram
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
 2. Copy the bot token
-3. Configure in OpenClaw:
+3. Add the channel:
 
 ```bash
-openclaw channels add telegram
+openclaw channels add
+# Select: Telegram (Bot API)
 # Paste your bot token when prompted
 ```
 
-### WhatsApp
+**Note:** Telegram requires outbound HTTPS to `api.telegram.org`. If you use a VPN, Telegram polling may be blocked — ensure the VPN allows this traffic or use a split tunnel (see Step 8).
 
-Requires WhatsApp Business API or a bridge like Baileys. Follow the [OpenClaw WhatsApp guide](https://docs.openclaw.ai/channels/whatsapp).
+### WhatsApp (tested and working)
+
+WhatsApp connects via QR code — simpler than Telegram for VPN setups since it uses WebSocket.
+
+```bash
+openclaw channels add
+# Select: WhatsApp (QR link)
+# Select: default (primary)
+```
+
+1. A QR code appears in the terminal
+2. On your phone: WhatsApp → Settings → Linked Devices → Link a Device
+3. Scan the QR code
+4. Select "This is my personal phone number"
+5. Enter your phone number for allowlisting
+
+The config will look like:
+
+```json
+"channels": {
+    "whatsapp": {
+        "enabled": true,
+        "dmPolicy": "allowlist",
+        "allowFrom": ["+852XXXXXXXX"]
+    }
+}
+```
+
+**Note:** If `groupPolicy` is "allowlist" but `groupAllowFrom` is empty, all group messages are silently dropped. Add group IDs to `groupAllowFrom` if you need group support.
 
 ### Discord
 
 Follow the [OpenClaw Discord guide](https://docs.openclaw.ai/channels/discord) to create a bot and configure channel access.
+
+## Step 4.5: Configure Web Search
+
+OpenClaw supports five search providers. **Gemini is recommended** (free tier: 60 requests/min, 1,000/day).
+
+Get your API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey), then configure:
+
+```json
+"tools": {
+    "web": {
+        "search": {
+            "enabled": true,
+            "provider": "gemini",
+            "apiKey": "AIza..."
+        }
+    }
+}
+```
+
+Available providers: `brave`, `perplexity`, `grok`, `gemini`, `kimi`. Tavily is **not supported** despite being popular with other agent frameworks.
 
 ## Step 5: Recommended Skills
 
@@ -347,6 +396,101 @@ Priorities:
 - Proactively check system health (battery, memory, GPU temp)
 ```
 
+## Step 8: WireGuard VPN (optional)
+
+If you need a VPN for Telegram or other services, WireGuard works well on Nobara. Surfshark Linux doesn't support split tunneling, so WireGuard CLI is recommended.
+
+### Install and configure
+
+```bash
+sudo dnf install wireguard-tools
+```
+
+Get a WireGuard config from your VPN provider (e.g., Surfshark dashboard), save it to `/etc/wireguard/wg0.conf`, then add local network exclusion to keep SSH working:
+
+```ini
+[Interface]
+Address = 10.14.0.2/16
+PrivateKey = YOUR_PRIVATE_KEY
+DNS = 162.252.172.57, 149.154.159.92
+PostUp = ip route add 192.168.0.0/16 via $(ip -4 route show default dev wlo1 | awk '{print $3}') dev wlo1
+PreDown = ip route del 192.168.0.0/16 2>/dev/null || true
+
+[Peer]
+PublicKey = YOUR_PEER_KEY
+AllowedIPs = 0.0.0.0/0
+Endpoint = your-vpn-server:51820
+```
+
+The `PostUp` line auto-detects your WiFi gateway and keeps all `192.168.x.x` traffic local (SSH, LAN access). Works on any WiFi network.
+
+### Start and enable
+
+```bash
+sudo wg-quick up wg0        # start VPN
+curl ifconfig.me             # verify VPN IP
+sudo systemctl enable wg-quick@wg0  # auto-start on boot
+```
+
+### Stop
+
+```bash
+sudo wg-quick down wg0
+```
+
+**Note:** If WireGuard starts before WiFi connects on boot, the gateway detection fails. Restart manually: `sudo wg-quick down wg0 && sudo wg-quick up wg0`.
+
+## Step 9: Claude OAuth Token Management (optional)
+
+If you use a Claude Max subscription instead of an API key, you can authenticate via OAuth token. This is less reliable than an API key but included in your subscription.
+
+### Initial setup
+
+```bash
+# Install Claude Code CLI
+curl -fsSL https://claude.ai/install.sh | bash
+
+# Login with your Max account
+claude auth login
+# Follow browser prompts, paste auth code
+
+# Extract the token
+grep accessToken ~/.claude/.credentials.json
+```
+
+Copy the `sk-ant-oat01-...` token into your OpenClaw config under `env.ANTHROPIC_API_KEY`.
+
+### Token refresh script
+
+OAuth tokens expire frequently. A refresh script is provided:
+
+```bash
+# Sync token from Claude credentials to OpenClaw (after manual login)
+~/refresh-claude-token.sh
+
+# Force refresh via API call, then sync
+~/refresh-claude-token.sh --force
+
+# Check status
+~/refresh-claude-token.sh --status
+
+# Auto-refresh every 2 hours
+~/refresh-claude-token.sh --install
+
+# Remove auto-refresh
+~/refresh-claude-token.sh --uninstall
+```
+
+The `--force` flag sends a real API call (`claude -p "hi"`) to trigger the OAuth refresh flow using the stored refresh token.
+
+### Known limitations
+
+- OAuth tokens expire every few hours — requires regular refresh
+- Anthropic's client fingerprinting may reject requests with 403 errors
+- `--force` only works if the refresh token is still valid (weeks/months)
+- When the refresh token expires, you must run `claude auth login` manually
+- **Recommendation:** Use an Anthropic API key ($5 gets you started) for reliable, permanent access
+
 ## Troubleshooting
 
 ### OpenClaw can't connect to llama.cpp
@@ -369,14 +513,42 @@ lsof -i :18789
 journalctl --user -u openclaw -f
 ```
 
-### Tool calls fail with Qwen3.5 models
+### Tool calls work — confirmed with --jinja
 
-Qwen 3.5 tool calling is broken in Ollama but works in llama.cpp. Make sure you're using llama.cpp with the `--jinja` flag:
+Tool calling works correctly when llama.cpp is started with the `--jinja` flag. The `run-model.sh` script enables this automatically. Verified via curl:
 
 ```bash
-~/llama.cpp/build/bin/llama-server \
-  -m /shared/models/gguf/Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf \
-  -ngl 99 -t 8 -c 32768 --parallel 1 --jinja
+curl -s http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role":"user","content":"Run the command: hostname"}],
+    "tools": [{"type":"function","function":{"name":"exec","description":"Run a shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}],
+    "tool_choice": "auto"
+  }' | python3 -m json.tool
+```
+
+Returns `"finish_reason": "tool_calls"` with proper JSON format.
+
+**Note:** OpenClaw may still not intercept tool calls from the local model in some configurations. If the agent shows raw `[exec(...)]` text instead of executing commands, check that the model alias and provider config match. Claude API tool calling works natively without issues.
+
+### OpenClaw context window shows 16k instead of 32k
+
+The onboarding wizard defaults to 16k. Fix in `~/.openclaw/openclaw.json`:
+
+```json
+"models": [{
+    "id": "Qwen3.5-35B-A3B",
+    "contextWindow": 32000,
+    "maxTokens": 8192
+}]
+```
+
+### OpenClaw doesn't fall back on auth errors
+
+OpenClaw only falls back on connection errors and timeouts, **not** on auth errors (401/403). If Claude returns 401, the local model is not tried — OpenClaw assumes your credentials are wrong. Switch primary to local if Claude auth is broken:
+
+```json
+"primary": "local/Qwen3.5-35B-A3B"
 ```
 
 ### High token costs with Claude

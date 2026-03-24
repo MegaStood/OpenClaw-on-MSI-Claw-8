@@ -106,8 +106,18 @@ All benchmarks measured on the Claw 8 AI+ with llama.cpp built with Vulkan, 8 th
 |-------|--------|------|---------|--------|---------|-----|
 | Qwen3.5-4B (dense) | 4B | 2.70 GB | **629** | **445** | **263** | 11.5 |
 | **LFM2-24B-A2B** | **2B MoE** | **15.75 GB** | 394 | 232 | 153 | **20.7** |
-| Qwen3.5-35B-A3B | 3B MoE | 20.70 GB | 308 | 200 | 153 | 9.5 |
+| Qwen3.5-35B-A3B (Q4_K_XL) | 3B MoE | 20.70 GB | 308 | 200 | 153 | 9.5 |
+| Qwen3.5-35B-A3B Uncensored (IQ4_XS) | 3B MoE | 17.36 GB | 300 | 210 | 159 | **13.3** |
+| Nemotron-Cascade-2-30B-A3B (IQ4_XS) | 3.5B MoE | 16.73 GB | 312 | 223 | 175 | **16.9** |
+| GPT-OSS-20B (F16) | 20B dense | 12.83 GB | 230 | 235 | 91 | 9.5 |
 | GLM-4.7-Flash | 3B MoE | 17.05 GB | 304 | 118 | 43 | 11.9 |
+
+### Quantization Impact — Qwen3.5-35B-A3B
+
+| Quant | Size | TG | VRAM headroom | Notes |
+|-------|------|-----|---------------|-------|
+| Q4_K_XL | 20.7 GB | 9.5 tok/s | ~1 GB (needs `--parallel 1`) | Official quant, best quality |
+| IQ4_XS | 17.4 GB | **13.3 tok/s** | ~4 GB (auto parallel) | **+40% TG**, minimal quality loss |
 
 ### PP Slowdown from 512 → 32k (Architecture Impact)
 
@@ -148,18 +158,18 @@ Total iGPU shared memory: ~23.7 GB (from 32GB system RAM)
 
 ## Model Recommendations for OpenClaw
 
-| Model | Architecture | Active | Size | TG | PP @32k | Best For |
+| Model | Architecture | Active | Size | TG | Agent Score | Best For |
 |---|---|---|---|---|---|---|
-| **LFM2-24B-A2B Q5_K_M ★** | **Hybrid Conv+GQA MoE** | **2B** | **16GB** | **20.7** | **153** | **Fastest local, good tool dispatch** |
-| Qwen3.5-4B Q4_K_XL | Hybrid SSM+Attn dense | 4B | 3GB | 11.5 | 263 | Quick tasks, fastest PP |
-| GLM-4.7-Flash Q4_K_M | All-Attention MoE | 3B | 17GB | 11.9 | 43 | Thinking mode, agentic coding |
-| Qwen3.5-35B-A3B Q4_K_XL | Hybrid SSM+Attn MoE | 3B | 21GB | 9.5 | 153 | Best 32k PP scaling, thinking mode |
+| **Qwen3.5-35B-A3B IQ4_XS ★** | **Hybrid SSM+Attn MoE** | **3B** | **17GB** | **13.3** | **Tau-2: 81.2** | **Best agent model — tool calling, multi-step tasks** |
+| Nemotron-Cascade-2-30B IQ4_XS | Hybrid Mamba2+Attn MoE | 3.5B | 17GB | 16.9 | Tau-2: 58.9 | Math/coding competitions, fastest MoE TG |
+| LFM2-24B-A2B Q5_K_M | Hybrid Conv+GQA MoE | 2B | 16GB | 20.7 | Poor (26% multi-step) | Fastest TG, but unreliable tool calling |
+| Qwen3.5-4B Q4_K_XL | Hybrid SSM+Attn dense | 4B | 3GB | 11.5 | Not tested | Quick tasks, smallest footprint |
 
-**Choosing a model:**
-- **Speed priority:** LFM2-24B at 20.7 tok/s — fastest by far, 80% single-tool accuracy, but only 26% multi-step chain success
-- **Reasoning priority:** Qwen3.5-35B with thinking mode — slower TG but better multi-step accuracy, excellent PP scaling at 32k
-- **Quick tasks:** Qwen3.5-4B — tiny footprint, fastest PP at all context sizes, but disable thinking mode
-- **Offload complex work:** Use DGX Spark or cloud API for heavy reasoning, keep local model for fast dispatch
+**Choosing a model for OpenClaw agent use:**
+- **Agent reliability priority:** Qwen3.5-35B IQ4_XS — best at tool calling (Tau-2 Bench 81.2, Terminal Bench 40.5), reliable multi-step execution, all 5 tool tests pass
+- **Speed priority:** Nemotron-Cascade-2 at 16.9 tok/s — 27% faster TG, great for math/coding, but 2x worse at agent tasks (Tau-2 58.9)
+- **Raw speed (no tools):** LFM2-24B at 20.7 tok/s — fastest but hallucinates tool outputs
+- **Offload complex work:** Use Claude API or DGX Spark for heavy reasoning, keep local model for fast dispatch and offline fallback
 
 **GGUF quantization notes:**
 - **Q4_K_M** — best balance of quality and speed, most optimized codepath in llama.cpp
@@ -188,11 +198,11 @@ OpenClaw on the Claw uses three inference backends, routing tasks by complexity:
 
 | Route | Backend | Speed | Use Case |
 |-------|---------|-------|----------|
-| Local llama.cpp | LFM2-24B via Vulkan on Arc 140V | 20 tok/s | Fast dispatch, offline, simple tool calls |
-| DGX Spark | Qwen3.5-122B/397B via vLLM | 26-30 tok/s | Tests, formatting, routine features |
-| Claude Agent SDK | Sonnet 4.6 via Anthropic API | Cloud | Complex bugs, architecture, refactoring |
+| Claude API | Sonnet 4.6 via Anthropic API key | Cloud | Primary — complex reasoning, research, tool calling |
+| Local llama.cpp | Qwen3.5-35B-A3B via Vulkan on Arc 140V | 13 tok/s | Fallback — offline, when Claude is unavailable |
+| DGX Spark | Qwen3.5-122B/Nemotron-120B via vLLM | 26-30 tok/s | Future — heavy inference over the network |
 
-Fallback logic: if Claude's weekly quota is exhausted, tasks automatically route to the Spark cluster.
+Fallback logic: if Claude returns an error or is rate-limited, tasks automatically route to the local model. Spark can be added as an intermediate tier.
 
 ### Local Setup (llama.cpp on the Claw)
 
@@ -240,30 +250,30 @@ vllm serve Qwen/Qwen3.5-122B-A10B-FP8 \
 
 ### OpenClaw Configuration
 
-OpenClaw supports three authentication methods for Claude. The Claude Agent SDK currently only supports API keys — Max subscription billing is not available for programmatic calls.
+OpenClaw supports multiple authentication methods for Claude.
 
-**Claude subscription options:**
+**Claude authentication options:**
 
-| Plan | Price | Use with OpenClaw | Notes |
-|------|-------|-------------------|-------|
-| Anthropic API key | Pay-per-token | Direct API access | ~$3/$15 per M tokens (Sonnet), full control |
-| Claude Max 5x | $100/mo | Via Claude Code CLI subprocess | 5x Pro quota, 7-day rolling cap |
-| Claude Max 20x | $200/mo | Via Claude Code CLI subprocess | 20x Pro quota, best for heavy use |
+| Method | Cost | Status | Notes |
+|--------|------|--------|-------|
+| Anthropic API key | Pay-per-token | ✅ Recommended | ~$3/$15 per M tokens (Sonnet), never expires |
+| Claude Max OAuth token | Included in subscription | ⚠️ Unreliable | Tokens expire frequently, client fingerprinting may block |
+| OpenAI API key | Pay-per-token | ✅ Works | GPT-4.1 as alternative/fallback |
 
-**Important:** OAuth tokens from Pro/Max subscriptions are banned in third-party tools since January 2026. Use an API key for direct OpenClaw integration, or use the Claude Code CLI subprocess path (which is permitted).
+**Important:** OAuth tokens from Pro/Max subscriptions are officially banned in third-party tools since January 2026. In practice, they work intermittently but get 401/403 errors frequently. **Use an API key for reliable operation.** A token refresh script (`scripts/refresh-claude-token.sh`) is provided for those who want to try the OAuth path anyway.
 
-**Full three-route configuration:**
+**Working configuration (Claude primary + local fallback):**
 
 ```json
 {
   "env": {
-    "ANTHROPIC_API_KEY": "sk-ant-YOUR_KEY_HERE"
+    "ANTHROPIC_API_KEY": "sk-ant-api03-YOUR_KEY_HERE"
   },
   "agents": {
     "defaults": {
       "model": {
         "primary": "anthropic/claude-sonnet-4-6",
-        "fallbacks": ["spark/qwen3.5-122b", "local/lfm2-24b"]
+        "fallbacks": ["local/Qwen3.5-35B-A3B"]
       },
       "models": {
         "anthropic/claude-sonnet-4-6": {
@@ -276,18 +286,31 @@ OpenClaw supports three authentication methods for Claude. The Claude Agent SDK 
   },
   "models": {
     "providers": {
-      "spark": {
-        "baseUrl": "http://192.168.50.121:8888/v1",
-        "apiKey": "no-key",
-        "api": "openai-completions"
-      },
       "local": {
         "baseUrl": "http://127.0.0.1:8080/v1",
         "apiKey": "no-key",
-        "api": "openai-completions"
+        "api": "openai-completions",
+        "models": [{
+          "id": "Qwen3.5-35B-A3B",
+          "contextWindow": 32000,
+          "maxTokens": 8192
+        }]
       }
     }
   }
+}
+```
+
+**With OpenAI as additional fallback:**
+
+```json
+"env": {
+    "ANTHROPIC_API_KEY": "sk-ant-api03-...",
+    "OPENAI_API_KEY": "sk-..."
+},
+"model": {
+    "primary": "anthropic/claude-sonnet-4-6",
+    "fallbacks": ["openai/gpt-4.1", "local/Qwen3.5-35B-A3B"]
 }
 ```
 

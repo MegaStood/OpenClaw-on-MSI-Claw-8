@@ -83,12 +83,13 @@ done
 # ── Kill action (early exit) ─────────────────────────────────────────────────
 
 if [ "$ACTION" = "kill" ]; then
-    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-        PID=$(cat "$PIDFILE")
+    PID=""
+    [ -f "$PIDFILE" ] && PID=$(cat "$PIDFILE")
+    if [[ "$PID" =~ ^[0-9]+$ ]] && kill -0 "$PID" 2>/dev/null; then
         kill "$PID"
         rm -f "$PIDFILE"
         echo "Stopped llama-server (PID: $PID)"
-    elif pkill -f llama-server 2>/dev/null; then
+    elif pkill -x llama-server 2>/dev/null; then
         rm -f "$PIDFILE"
         echo "Stopped llama-server (found via pkill)"
     else
@@ -152,7 +153,7 @@ get_param_size() {
     # Q4 quantization ≈ 0.5 GB per 1B total params
     local file_gb
     file_gb=$(du -BG "$1" | grep -oP '\d+' | head -1)
-    echo $(( file_gb * 2 ))
+    echo $(( ${file_gb:-0} * 2 ))
 }
 
 # ── VRAM check ───────────────────────────────────────────────────────────────
@@ -168,7 +169,7 @@ check_vram() {
     # Rough KV cache estimate: ~1GB per 16k context for typical models
     local kv_gb=$(( context / 16384 ))
     [ "$kv_gb" -lt 1 ] && kv_gb=1
-    local total_needed=$(( file_gb + kv_gb ))
+    local total_needed=$(( ${file_gb:-0} + kv_gb ))
 
     if [ "$total_needed" -gt "$AVAILABLE_VRAM" ]; then
         echo ""
@@ -226,7 +227,7 @@ fi
 
 if [ -z "$MODEL_NUM" ]; then
     show_models
-    read -p "Select model (1-${#MODELS[@]}): " choice
+    read -rp "Select model (1-${#MODELS[@]}): " choice
 else
     choice="$MODEL_NUM"
 fi
@@ -248,11 +249,11 @@ PARAMS=$(get_param_size "$MODEL")
 # - 8k is sufficient for simple chat with small models
 
 if [ "$PARAMS" -ge 9 ] 2>/dev/null; then
-    REASONING_ARGS=""
+    REASONING_ARGS=()
     CONTEXT=32768
     MODE_LABEL="reasoning ON, context 32k"
 else
-    REASONING_ARGS="--reasoning-budget 0"
+    REASONING_ARGS=("--reasoning-budget" "0")
     CONTEXT=8192
     MODE_LABEL="reasoning OFF, context 8k"
 fi
@@ -261,9 +262,9 @@ fi
 # -ctk q8_0 -ctv q8_0: quantize KV cache to Q8 (~50% memory, <0.1% quality loss)
 # --parallel 1: single slot only (not enough VRAM for multiple concurrent requests)
 if [ "$PARAMS" -ge 20 ] 2>/dev/null; then
-    VRAM_ARGS="-ctk q8_0 -ctv q8_0 --parallel 1"
+    VRAM_ARGS=("-ctk" "q8_0" "-ctv" "q8_0" "--parallel" "1")
 else
-    VRAM_ARGS=""
+    VRAM_ARGS=()
 fi
 
 # ── Benchmark action ─────────────────────────────────────────────────────────
@@ -298,10 +299,11 @@ check_vram "$MODEL" "$CONTEXT"
 
 # ── Check for already-running server ─────────────────────────────────────────
 
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    RUNNING_PID=$(cat "$PIDFILE")
+RUNNING_PID=""
+[ -f "$PIDFILE" ] && RUNNING_PID=$(cat "$PIDFILE")
+if [[ "$RUNNING_PID" =~ ^[0-9]+$ ]] && kill -0 "$RUNNING_PID" 2>/dev/null; then
     echo "llama-server already running (PID: $RUNNING_PID)"
-    read -p "Kill it and load new model? (y/n): " KILL_EXISTING
+    read -rp "Kill it and load new model? (y/n): " KILL_EXISTING
     if [ "$KILL_EXISTING" = "y" ] || [ "$KILL_EXISTING" = "Y" ]; then
         kill "$RUNNING_PID"
         rm -f "$PIDFILE"
@@ -314,7 +316,7 @@ else
     # Clean up stale PID file
     rm -f "$PIDFILE"
     # Kill any orphaned llama-server processes
-    pkill -f llama-server 2>/dev/null && sleep 1
+    pkill -x llama-server 2>/dev/null && sleep 1
 fi
 
 # ── Launch server ────────────────────────────────────────────────────────────
@@ -336,14 +338,14 @@ echo ""
 # --jinja: enables proper tool call format parsing (required for OpenClaw tool calling)
 
 if [ "$DETACH" = true ]; then
-    $LLAMA_SERVER \
+    "$LLAMA_SERVER" \
         -m "$MODEL" \
         -ngl 99 \
         -t 8 \
-        -c $CONTEXT \
+        -c "$CONTEXT" \
         --jinja \
-        $REASONING_ARGS \
-        $VRAM_ARGS \
+        "${REASONING_ARGS[@]}" \
+        "${VRAM_ARGS[@]}" \
         > "$HOME/.llama-server.log" 2>&1 &
     SERVER_PID=$!
     echo "$SERVER_PID" > "$PIDFILE"
@@ -353,14 +355,14 @@ if [ "$DETACH" = true ]; then
 else
     # Foreground mode — write PID file, clean up on exit
     trap 'rm -f "$PIDFILE"' EXIT INT TERM
-    $LLAMA_SERVER \
+    "$LLAMA_SERVER" \
         -m "$MODEL" \
         -ngl 99 \
         -t 8 \
-        -c $CONTEXT \
+        -c "$CONTEXT" \
         --jinja \
-        $REASONING_ARGS \
-        $VRAM_ARGS &
+        "${REASONING_ARGS[@]}" \
+        "${VRAM_ARGS[@]}" &
     SERVER_PID=$!
     echo "$SERVER_PID" > "$PIDFILE"
     wait "$SERVER_PID"

@@ -204,6 +204,19 @@ OpenClaw on the Claw uses three inference backends, routing tasks by complexity:
 
 Fallback logic: if Claude returns an error or is rate-limited, tasks automatically route to the local model. Spark can be added as an intermediate tier.
 
+### Multi-Agent Setup
+
+Three agents with different models and purposes, accessible from any channel:
+
+| Agent | Model | Access | Use Case |
+|-------|-------|--------|----------|
+| **Claw 🦞** | Claude Sonnet 4.6 | TUI, WhatsApp, Telegram | Daily tasks, quick questions, tool calling |
+| **Atlas 🏛️** | Claude Opus 4.6 | CLI: `openclaw agent --agent opus` | Financial research, deep analysis, reports |
+| **Claude Code** | Claude Opus 4.6 (via CLI) | Delegated by Claw via coding-agent skill | Code review, refactoring, multi-file edits |
+| **Local fallback** | Qwen3.5-35B-A3B IQ4_XS | When Claude is unavailable | Offline tasks, 13.3 tok/s |
+
+Cross-agent delegation: Claw can spawn Atlas for research tasks (`sessions_spawn`) and delegate code review to Claude Code via the `coding-agent` skill. Requires `tools.sessions.visibility: "all"` in config.
+
 ### Local Setup (llama.cpp on the Claw)
 
 ```bash

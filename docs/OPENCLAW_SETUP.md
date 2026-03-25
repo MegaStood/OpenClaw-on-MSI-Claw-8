@@ -385,16 +385,187 @@ This runs the onboarding flow that sets the agent's name, personality, and learn
 ### Example SOUL.md for the Claw
 
 ```markdown
-You are a helpful AI assistant running on an MSI Claw 8 AI+ handheld.
-You have access to local llama.cpp inference (fast, offline) and
-remote DGX Spark inference (powerful, requires network).
-
-Priorities:
-- Use local inference for quick tasks and when offline
-- Route complex reasoning to the Spark cluster when available
-- Be concise — this is a handheld device, screen space is limited
-- Proactively check system health (battery, memory, GPU temp)
+Your name is Claw 🦞. You are Richard's personal assistant running on an MSI Claw 8 AI+ handheld.
+Keep responses short — this is a small screen.
+You have access to Atlas (Opus) for deep research — delegate when needed.
+You have access to Claude Code for code review — delegate coding tasks.
+For system tasks, always run commands rather than guessing outputs.
 ```
+
+## Step 7.5: Multi-Agent Setup
+
+OpenClaw supports multiple agents with different models and workspaces. This enables a daily-driver agent (fast, cheap) alongside a specialist agent (powerful, slower).
+
+### Configure agents in openclaw.json
+
+```json
+"agents": {
+    "defaults": {
+        "model": {
+            "primary": "anthropic/claude-sonnet-4-6",
+            "fallbacks": ["local/Qwen3.5-35B-A3B"]
+        },
+        "models": {
+            "local/Qwen3.5-35B-A3B": {
+                "alias": "local-35b"
+            }
+        },
+        "workspace": "/home/nobara-user/.openclaw/workspace"
+    },
+    "list": [
+        {"id": "main", "default": true},
+        {
+            "id": "opus",
+            "model": {"primary": "anthropic/claude-opus-4-6"},
+            "workspace": "/home/nobara-user/.openclaw/workspaces/opus"
+        }
+    ]
+}
+```
+
+### Create the Opus workspace
+
+```bash
+mkdir -p ~/.openclaw/workspaces/opus
+cat > ~/.openclaw/workspaces/opus/SOUL.md << 'EOF'
+You are a senior financial research analyst running on Claude Opus 4.6.
+Core competencies: equity research, technical analysis, market backtesting, macro research.
+Output formats: PDF reports, PPT presentations, concise bullet-point summaries.
+Style: data-driven, cite specific numbers, present bull/bear cases, flag risks explicitly.
+EOF
+```
+
+### Usage
+
+```bash
+# Daily tasks via TUI (Sonnet)
+openclaw tui
+
+# Research tasks via CLI (Opus)
+openclaw agent --agent opus --message "Analyze TSMC quarterly results"
+
+# Deliver Opus reply to Telegram
+openclaw agent --agent opus --message "TSMC bull/bear case" --deliver --reply-channel telegram
+```
+
+**Note:** Two TUI instances conflict — use TUI for Sonnet and CLI for Opus.
+
+### Cross-agent delegation
+
+Enable Claw to spawn Atlas for research tasks:
+
+```json
+"tools": {
+    "sessions": {
+        "visibility": "all"
+    }
+}
+```
+
+Then in chat: "Ask Atlas to analyze TSMC earnings" — Claw uses `sessions_spawn` to delegate.
+
+### Claude Code as coding sub-agent
+
+The `coding-agent` skill delegates to Claude Code CLI (Opus 4.6, 1M context). Install:
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+claude auth login
+```
+
+Usage in chat: "Use the coding agent to review run-model.sh for bugs" — Claw spawns Claude Code in background, returns results.
+
+## Step 7.6: Tools and Skills Configuration
+
+### Tools — what the agent CAN do
+
+Tools are permissions. Without `exec`, the agent can't run commands. Without `write`, it can't create files. Recommended configuration:
+
+```json
+"tools": {
+    "allow": [
+        "read", "write", "edit", "apply_patch",
+        "exec", "process",
+        "web_search", "web_fetch",
+        "image",
+        "memory_search", "memory_get",
+        "sessions_list", "sessions_history", "sessions_send", "sessions_spawn", "sessions_yield", "session_status",
+        "agents_list",
+        "message",
+        "cron"
+    ],
+    "deny": ["nodes", "canvas", "llm_task", "lobster"],
+    "sessions": {
+        "visibility": "all"
+    },
+    "web": {
+        "search": {
+            "enabled": true,
+            "provider": "gemini",
+            "apiKey": "YOUR_GEMINI_KEY"
+        }
+    }
+},
+"approvals": {
+    "exec": { "enabled": true }
+}
+```
+
+**Key safety principles:**
+- `exec` with approval — every command shown before execution
+- `message` only to yourself — never let AI send messages as you to others
+- Last mile yourself — checkout, publish, send external messages manually
+
+### Skills — HOW the agent does it
+
+Skills are knowledge (textbooks). A skill without its tool is useless. Use `allowBundled` whitelist to only enable what you need:
+
+```json
+"skills": {
+    "allowBundled": [
+        "weather", "summarize", "clawhub", "healthcheck",
+        "skill-creator", "coding-agent", "video-frames",
+        "session-logs", "node-connect", "github"
+    ]
+}
+```
+
+**Note:** Bundled skills auto-enable when their CLI dependency is installed. Without `allowBundled`, all 53 skills activate if their tools exist.
+
+### Skill dependencies
+
+| Skill | Requires | Install |
+|-------|----------|---------|
+| github | `gh` CLI + auth | `sudo dnf install gh && gh auth login` |
+| clawhub | `clawhub` npm | `npm install -g clawhub` |
+| session-logs | `jq` | `sudo dnf install jq` |
+| summarize | `yt-dlp`, `trafilatura` | `pip install --break-system-packages yt-dlp trafilatura` |
+| coding-agent | Claude Code CLI | `curl -fsSL https://claude.ai/install.sh \| bash` |
+
+## Step 7.7: Python Packages for Research and Reports
+
+For the Opus research agent (Atlas) to create financial reports and presentations:
+
+```bash
+pip install --break-system-packages \
+    yfinance pandas beautifulsoup4 requests \
+    python-pptx python-docx \
+    matplotlib plotly kaleido \
+    openpyxl weasyprint
+```
+
+| Package | Purpose |
+|---------|---------|
+| yfinance | Stock prices, financials, dividends, earnings |
+| pandas | Data analysis, tables, calculations |
+| beautifulsoup4 | Web scraping financial data |
+| python-pptx | Create PowerPoint presentations |
+| python-docx | Create Word documents |
+| matplotlib, plotly, kaleido | Charts and visualizations |
+| openpyxl | Read/write Excel files |
+| weasyprint | HTML → PDF reports |
+
+Usage: "Create a 10-slide investor presentation for TSMC with revenue charts" — Atlas writes a Python script using python-pptx + yfinance + matplotlib, executes it, and delivers the file.
 
 ## Step 8: WireGuard VPN (optional)
 
@@ -555,10 +726,38 @@ OpenClaw only falls back on connection errors and timeouts, **not** on auth erro
 
 Context accumulation is the biggest cost driver. Long sessions re-send entire conversation history with every API call. Mitigate by:
 
-- Starting new sessions regularly
+- Starting new sessions regularly (`/new` in TUI)
 - Using `cacheRetention: "short"` in config
 - Routing routine tasks to the free Spark or local endpoint
 - Setting a spend limit in the Anthropic console
+
+### Telegram blocked by VPN
+
+Telegram polling requires outbound HTTPS to `api.telegram.org`. WireGuard VPN may block this with `ETIMEDOUT` or `ENETUNREACH` errors. WhatsApp (WebSocket-based) typically works through VPN while Telegram does not. If you see these in logs:
+
+```
+fetch fallback: enabling sticky IPv4-only dispatcher (codes=ETIMEDOUT,ENETUNREACH)
+```
+
+Test without VPN: `sudo wg-quick down wg0`, restart gateway, try Telegram. If it works, the VPN is the issue.
+
+### Cron job can't find claude CLI
+
+Cron uses a minimal PATH. If the refresh script logs `WARNING: claude CLI not found`, add PATH to crontab:
+
+```bash
+crontab -e
+```
+
+Add at the top:
+
+```
+PATH=/home/nobara-user/.local/bin:/home/nobara-user/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+```
+
+### Claude overloaded errors
+
+OAuth token shares rate limits with claude.ai, Claude Code CLI, and OpenClaw. If you see `overloaded_error`, all three are competing for the same quota. Wait a few minutes, or get an Anthropic API key (separate quota).
 
 ## NemoClaw vs OpenClaw
 

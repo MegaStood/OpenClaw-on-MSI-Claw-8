@@ -188,6 +188,17 @@ fi
 
 log "Updated OpenClaw config"
 
+# ── Step 3b: Update systemd service file ────────────────────────────────────
+
+SYSTEMD_UNIT="$HOME/.config/systemd/user/openclaw-gateway.service"
+if [ -f "$SYSTEMD_UNIT" ] && grep -q "ANTHROPIC_API_KEY" "$SYSTEMD_UNIT"; then
+    sed -i "s|Environment=ANTHROPIC_API_KEY=.*|Environment=ANTHROPIC_API_KEY=$CLAUDE_TOKEN|" "$SYSTEMD_UNIT"
+    systemctl --user daemon-reload 2>/dev/null
+    log "Updated systemd service file"
+else
+    log "NOTE: No ANTHROPIC_API_KEY in systemd service file, skipping"
+fi
+
 # ── Step 4: Restart gateway ─────────────────────────────────────────────────
 
 log "Restarting OpenClaw gateway..."

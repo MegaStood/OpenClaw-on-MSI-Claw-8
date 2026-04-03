@@ -93,82 +93,123 @@ echo "  Selected: $USB_DEV ($USB_MODEL, $USB_SIZE)"
 echo "  Ventoy will ask for confirmation before writing to the disk."
 
 # ============================================================
-# Step 2: Unmount any mounted partitions on the USB
+# Step 2/3: Check Ventoy — install only if needed
 # ============================================================
 echo ""
-echo -e "${YELLOW}[2/5] Unmounting USB partitions...${NC}"
-
-for part in $(lsblk -lnpo NAME "$USB_DEV" | tail -n +2); do
-    MPOINT=$(lsblk -lno MOUNTPOINT "$part" 2>/dev/null || true)
-    if [ -n "$MPOINT" ]; then
-        echo "  Unmounting $part ($MPOINT)..."
-        umount "$part" 2>/dev/null || umount -l "$part" 2>/dev/null || true
-    fi
-done
-echo -e "${GREEN}  Done.${NC}"
-
-# ============================================================
-# Step 3: Install Ventoy (GPT mode) on the USB
-# ============================================================
-echo ""
-echo -e "${YELLOW}[3/5] Installing Ventoy (GPT mode) on $USB_DEV...${NC}"
+echo -e "${YELLOW}[2/5] Checking Ventoy on $USB_DEV...${NC}"
 
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-# Resolve latest Ventoy version and download
-VENTOY_TAG=$(curl -sI "$VENTOY_RELEASES" | grep -i location | grep -oP 'v[\d.]+' | head -1)
-if [ -z "$VENTOY_TAG" ]; then
-    echo -e "${RED}  Could not detect latest Ventoy version.${NC}"
-    exit 1
-fi
-# Tag is "v1.1.10" but filename uses "1.1.10" (no v prefix)
-VENTOY_VER="${VENTOY_TAG#v}"
-VENTOY_TAR="ventoy-${VENTOY_VER}-linux.tar.gz"
-VENTOY_DL="https://github.com/ventoy/Ventoy/releases/download/${VENTOY_TAG}/${VENTOY_TAR}"
-
-echo "  Latest Ventoy: $VENTOY_VER"
-if [ -f "$VENTOY_TAR" ]; then
-    echo "  Using cached $VENTOY_TAR"
-else
-    echo "  Downloading $VENTOY_TAR ..."
-    wget -q --show-progress "$VENTOY_DL"
-fi
-
-# Extract
-echo "  Extracting..."
-tar -xzf "$VENTOY_TAR"
-cd ventoy-*/
-
-# Install Ventoy in GPT mode (-i = initial install, -g = GPT)
-echo "  Installing Ventoy to $USB_DEV (GPT mode)..."
-bash Ventoy2Disk.sh -i -g "$USB_DEV"
-
-if [ $? -ne 0 ]; then
-    echo -e "${RED}  Ventoy installation failed. Check errors above.${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}  Ventoy installed successfully.${NC}"
-
-# Wait for partition to appear and mount
-echo "  Waiting for Ventoy partition to appear..."
-sleep 3
-partprobe "$USB_DEV" 2>/dev/null || true
-sleep 2
-
-# Find the Ventoy data partition (first partition, usually FAT32/exFAT)
 VENTOY_PART="${USB_DEV}1"
-if [ ! -b "$VENTOY_PART" ]; then
-    echo -e "${RED}  Ventoy partition $VENTOY_PART not found. Check lsblk.${NC}"
-    exit 1
+
+# Check if Ventoy is already installed by looking for its second (EFI) partition
+VENTOY_INSTALLED=0
+if [ -b "${USB_DEV}2" ]; then
+    PART2_FSTYPE=$(blkid -s TYPE -o value "${USB_DEV}2" 2>/dev/null || true)
+    if [ "$PART2_FSTYPE" = "vfat" ] && [ -b "$VENTOY_PART" ]; then
+        # Ventoy creates a small FAT EFI partition as sda2 — if it exists, Ventoy is installed
+        VENTOY_INSTALLED=1
+    fi
 fi
 
-# Mount the Ventoy partition
-MOUNT_DIR="/mnt/ventoy-usb"
-mkdir -p "$MOUNT_DIR"
-mount "$VENTOY_PART" "$MOUNT_DIR"
-echo -e "${GREEN}  Mounted $VENTOY_PART at $MOUNT_DIR${NC}"
+if [ "$VENTOY_INSTALLED" = "1" ]; then
+    echo -e "${GREEN}  Ventoy already installed on $USB_DEV. Skipping install.${NC}"
+else
+    echo "  Ventoy not detected. Installing..."
+
+    # Unmount partitions and release device before Ventoy writes to raw disk
+    echo "  Unmounting USB partitions..."
+    fuser -km "$USB_DEV"* 2>/dev/null || true
+    sleep 1
+
+    for part in $(lsblk -lnpo NAME "$USB_DEV" | tail -n +2); do
+        MPOINT=$(lsblk -lno MOUNTPOINT "$part" 2>/dev/null || true)
+        if [ -n "$MPOINT" ]; then
+            echo "  Unmounting $part ($MPOINT)..."
+            umount "$part" 2>/dev/null || umount -l "$part" 2>/dev/null || true
+        fi
+    done
+
+    # Prevent desktop auto-remounting during Ventoy install
+    systemctl stop udisks2.service 2>/dev/null || true
+    UDISKS_STOPPED=1
+
+    # Resolve latest Ventoy version and download
+    VENTOY_TAG=$(curl -sI "$VENTOY_RELEASES" | grep -i location | grep -oP 'v[\d.]+' | head -1)
+    if [ -z "$VENTOY_TAG" ]; then
+        echo -e "${RED}  Could not detect latest Ventoy version.${NC}"
+        exit 1
+    fi
+    # Tag is "v1.1.10" but filename uses "1.1.10" (no v prefix)
+    VENTOY_VER="${VENTOY_TAG#v}"
+    VENTOY_TAR="ventoy-${VENTOY_VER}-linux.tar.gz"
+    VENTOY_DL="https://github.com/ventoy/Ventoy/releases/download/${VENTOY_TAG}/${VENTOY_TAR}"
+
+    echo "  Latest Ventoy: $VENTOY_VER"
+    if [ -f "$VENTOY_TAR" ]; then
+        echo "  Using cached $VENTOY_TAR"
+    else
+        echo "  Downloading $VENTOY_TAR ..."
+        wget -q --show-progress "$VENTOY_DL"
+    fi
+
+    # Extract
+    echo "  Extracting..."
+    tar -xzf "$VENTOY_TAR"
+    cd ventoy-*/
+
+    # Install Ventoy in GPT mode (-i = initial install, -g = GPT)
+    echo "  Installing Ventoy to $USB_DEV (GPT mode)..."
+    bash Ventoy2Disk.sh -i -g "$USB_DEV"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}  Ventoy installation failed. Check errors above.${NC}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}  Ventoy installed successfully.${NC}"
+
+    # Wait for partition to appear
+    echo "  Waiting for Ventoy partition to appear..."
+    sleep 2
+    partprobe "$USB_DEV" 2>/dev/null || true
+    sleep 2
+
+    # Re-read partition table if partitions haven't appeared
+    for i in 1 2 3 4 5; do
+        if [ -b "$VENTOY_PART" ]; then
+            break
+        fi
+        echo "  Waiting for $VENTOY_PART... (attempt $i/5)"
+        blockdev --rereadpt "$USB_DEV" 2>/dev/null || true
+        udevadm settle --timeout=5 2>/dev/null || true
+        sleep 2
+    done
+
+    if [ ! -b "$VENTOY_PART" ]; then
+        echo -e "${RED}  Ventoy partition $VENTOY_PART not found after 5 attempts.${NC}"
+        echo "  Try: sudo partprobe $USB_DEV && lsblk $USB_DEV"
+        exit 1
+    fi
+fi
+
+# Restart udisks2 if we stopped it
+if [ "${UDISKS_STOPPED:-0}" = "1" ]; then
+    systemctl start udisks2.service 2>/dev/null || true
+fi
+
+# Mount the Ventoy partition (use existing mount point if already mounted)
+EXISTING_MOUNT=$(lsblk -lno MOUNTPOINT "$VENTOY_PART" 2>/dev/null || true)
+if [ -n "$EXISTING_MOUNT" ]; then
+    MOUNT_DIR="$EXISTING_MOUNT"
+    echo -e "${GREEN}  Already mounted at $MOUNT_DIR${NC}"
+else
+    MOUNT_DIR="/mnt/ventoy-usb"
+    mkdir -p "$MOUNT_DIR"
+    mount "$VENTOY_PART" "$MOUNT_DIR"
+    echo -e "${GREEN}  Mounted $VENTOY_PART at $MOUNT_DIR${NC}"
+fi
 
 # ============================================================
 # Step 4: Download the Nobara Steam-Handheld ISO
@@ -212,7 +253,7 @@ else
         ISO_SIZE_FOUND=$(du -h "$ISO_FOUND" | cut -f1)
         echo -e "${GREEN}  Found existing ISO: $ISO_FOUND ($ISO_SIZE_FOUND)${NC}"
         echo "  Copying to USB..."
-        rsync -ah --progress "$ISO_FOUND" "$MOUNT_DIR/$ISO_NAME"
+        rsync -ah --progress --no-owner --no-group --no-perms "$ISO_FOUND" "$MOUNT_DIR/$ISO_NAME"
     else
         echo "  No existing ISO found. Downloading..."
         echo "  URL: $ISO_URL"
@@ -232,7 +273,7 @@ else
         # Copy to USB with progress
         echo ""
         echo "  Copying ISO to USB..."
-        rsync -ah --progress "$ISO_DL_PATH" "$MOUNT_DIR/"
+        rsync -ah --progress --no-owner --no-group --no-perms "$ISO_DL_PATH" "$MOUNT_DIR/"
     fi
 fi
 
@@ -247,7 +288,7 @@ echo "  This may take a few minutes for large files..."
 sync
 
 # Verify the ISO on USB
-ISO_SIZE=$(du -h "$ISO_PATH" | cut -f1)
+ISO_SIZE=$(du -h "$ISO_USB_PATH" | cut -f1)
 echo -e "${GREEN}  ISO on USB: $ISO_NAME ($ISO_SIZE)${NC}"
 
 # Unmount

@@ -239,7 +239,7 @@ else
     # Search common locations for existing ISO before downloading
     ISO_FOUND=""
     REAL_HOME=$(eval echo ~"$REAL_USER")
-    SEARCH_DIRS=("$WORK_DIR" "$REAL_HOME/Downloads" "$REAL_HOME" "/tmp" "/shared")
+    SEARCH_DIRS=("$REAL_HOME/Downloads" "$REAL_HOME" "$WORK_DIR" "/tmp" "/shared")
     echo "  Searching for existing $ISO_NAME ..."
     for dir in "${SEARCH_DIRS[@]}"; do
         MATCH=$(find "$dir" -maxdepth 2 -name "Nobara-*-Steam-Handheld-*.iso" -type f 2>/dev/null | head -1)
@@ -260,8 +260,8 @@ else
         echo "  This is a large file (~5-8GB). Please be patient."
         echo ""
 
-        # Download to work dir (resume support if interrupted)
-        ISO_DL_PATH="$WORK_DIR/$ISO_NAME"
+        # Download to ~/Downloads so the ISO persists across reboots
+        ISO_DL_PATH="$REAL_HOME/Downloads/$ISO_NAME"
         wget -c --show-progress -O "$ISO_DL_PATH" "$ISO_URL"
 
         if [ $? -ne 0 ]; then

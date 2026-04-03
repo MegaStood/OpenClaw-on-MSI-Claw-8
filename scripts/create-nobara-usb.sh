@@ -53,7 +53,7 @@ echo ""
 # ============================================================
 # Step 1: Detect USB devices
 # ============================================================
-echo -e "${YELLOW}[1/5] Detecting USB devices...${NC}"
+echo -e "${YELLOW}[1/4] Detecting USB devices...${NC}"
 
 # Find USB block devices (exclude internal drives)
 mapfile -t USB_DEVS < <(lsblk -dnpo NAME,TRAN,SIZE,MODEL | grep 'usb' | awk '{print $1}')
@@ -96,7 +96,7 @@ echo "  Ventoy will ask for confirmation before writing to the disk."
 # Step 2/3: Check Ventoy — install only if needed
 # ============================================================
 echo ""
-echo -e "${YELLOW}[2/5] Checking Ventoy on $USB_DEV...${NC}"
+echo -e "${YELLOW}[2/4] Checking Ventoy on $USB_DEV...${NC}"
 
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
@@ -215,7 +215,7 @@ fi
 # Step 4: Download the Nobara Steam-Handheld ISO
 # ============================================================
 echo ""
-echo -e "${YELLOW}[4/5] Preparing Nobara Steam-Handheld ISO...${NC}"
+echo -e "${YELLOW}[3/4] Preparing Nobara Steam-Handheld ISO...${NC}"
 
 # Check available space on USB
 USB_FREE_KB=$(df --output=avail "$MOUNT_DIR" | tail -1)
@@ -283,7 +283,7 @@ echo -e "${GREEN}  ISO ready on USB.${NC}"
 # Step 5: Sync and finalize
 # ============================================================
 echo ""
-echo -e "${YELLOW}[5/5] Syncing data to USB (do NOT unplug!)...${NC}"
+echo -e "${YELLOW}[4/4] Syncing data to USB (do NOT unplug!)...${NC}"
 echo "  This may take a few minutes for large files..."
 sync
 
@@ -291,9 +291,11 @@ sync
 ISO_SIZE=$(du -h "$ISO_USB_PATH" | cut -f1)
 echo -e "${GREEN}  ISO on USB: $ISO_NAME ($ISO_SIZE)${NC}"
 
-# Unmount
-umount "$MOUNT_DIR"
-rmdir "$MOUNT_DIR" 2>/dev/null || true
+# Only unmount if we mounted it ourselves (not if desktop auto-mounted)
+if [ "$MOUNT_DIR" = "/mnt/ventoy-usb" ]; then
+    umount "$MOUNT_DIR" 2>/dev/null || true
+    rmdir "$MOUNT_DIR" 2>/dev/null || true
+fi
 
 echo ""
 echo -e "${GREEN}========================================${NC}"

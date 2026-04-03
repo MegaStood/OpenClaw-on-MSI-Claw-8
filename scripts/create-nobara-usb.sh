@@ -236,7 +236,7 @@ else
         ISO_SIZE_FOUND=$(du -h "$ISO_FOUND" | cut -f1)
         echo -e "${GREEN}  Found existing ISO: $ISO_FOUND ($ISO_SIZE_FOUND)${NC}"
         echo "  Copying to USB..."
-        rsync -ah --progress "$ISO_FOUND" "$MOUNT_DIR/$ISO_NAME"
+        rsync -ah --no-owner --no-group --progress "$ISO_FOUND" "$MOUNT_DIR/$ISO_NAME"
     else
         echo "  No existing ISO found. Downloading..."
         echo "  URL: $ISO_URL"
@@ -256,7 +256,7 @@ else
         # Copy to USB with progress
         echo ""
         echo "  Copying ISO to USB..."
-        rsync -ah --progress "$ISO_DL_PATH" "$MOUNT_DIR/"
+        rsync -ah --no-owner --no-group --progress "$ISO_DL_PATH" "$MOUNT_DIR/"
     fi
 fi
 

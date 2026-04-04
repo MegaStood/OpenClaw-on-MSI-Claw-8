@@ -1,6 +1,7 @@
 #!/bin/bash
 # ============================================================
-# MSI Claw 8 AI+ (Lunar Lake) — Nobara Post-Install Script
+# MSI Claw Post-Install Script (Lunar Lake / Meteor Lake)
+# Supports: Claw 8 AI+ (32GB), Claw A1M (16GB), and similar Intel handhelds
 # Run this ONCE after first boot and WiFi connection
 # Usage: chmod +x claw8-post-install.sh && sudo bash claw8-post-install.sh
 # ============================================================
@@ -27,6 +28,18 @@ fi
 
 REAL_USER=${SUDO_USER:-$USER}
 REAL_HOME=$(eval echo ~"$REAL_USER")
+
+# Auto-detect build parallelism based on available RAM
+# 16GB machines (e.g. Claw A1M) can OOM with too many concurrent compile jobs
+TOTAL_RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
+if [ "$TOTAL_RAM_GB" -le 16 ]; then
+    MAX_JOBS=3
+elif [ "$TOTAL_RAM_GB" -le 32 ]; then
+    MAX_JOBS=6
+else
+    MAX_JOBS=8
+fi
+echo "  RAM: ${TOTAL_RAM_GB}GB detected → build parallelism: ${MAX_JOBS} jobs"
 
 # ============================================================
 # PHASE 1: System Update
@@ -221,7 +234,7 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
 
     if [ -f "$LLAMA_SERVER" ]; then
         echo -e "${GREEN}  llama.cpp already built at $LLAMA_DIR. Skipping build.${NC}"
-        echo "  To rebuild: cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j\$(nproc)"
+        echo "  To rebuild: cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j$MAX_JOBS"
     else
         echo "  Cloning and building llama.cpp with Vulkan support..."
         echo "  (This may take a few minutes...)"
@@ -233,7 +246,7 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
             # (e.g., a prior build without Vulkan would cache DGGML_VULKAN=OFF)
             rm -rf build
             cmake -B build -DGGML_VULKAN=ON
-            cmake --build build --config Release -j\$(nproc)
+            cmake --build build --config Release -j$MAX_JOBS
         "
 
         if [ -f "$LLAMA_SERVER" ]; then
@@ -247,12 +260,12 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
                 echo -e "${GREEN}  Vulkan backend confirmed working.${NC}"
             else
                 echo -e "${YELLOW}  Warning: Vulkan may not be active. If GPU offload doesn't work,${NC}"
-                echo -e "${YELLOW}  rebuild with: cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j\$(nproc)${NC}"
+                echo -e "${YELLOW}  rebuild with: cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j$MAX_JOBS${NC}"
             fi
         else
             echo -e "${RED}  llama.cpp build failed. Check errors above.${NC}"
             echo "  You can retry manually:"
-            echo "    cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j\$(nproc)"
+            echo "    cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j$MAX_JOBS"
         fi
     fi
 
@@ -553,7 +566,7 @@ else
     echo "  git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp"
     echo "  cd ~/llama.cpp"
     echo "  cmake -B build -DGGML_VULKAN=ON"
-    echo "  cmake --build build --config Release -j\$(nproc)"
+    echo "  cmake --build build --config Release -j$MAX_JOBS"
     echo ""
     echo "  # Download a model"
     echo "  scripts/download_model_fast.sh unsloth/Qwen3.5-35B-A3B-GGUF --gguf Q4_K_M"

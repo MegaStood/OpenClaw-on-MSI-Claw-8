@@ -146,8 +146,12 @@ echo "Web UI:  http://127.0.0.1:8080"
 echo "───────────────────────────────────────────────────────────────────────────────"
 echo ""
 
+# Auto-detect thread count (use all available threads)
+# Claw 8 AI+ (258V): 8 threads, Claw A1M (155H): 20 threads
+THREADS=$(nproc)
+
 # -ngl 99:  offload all layers to GPU (Vulkan). Without this, runs CPU-only
-# -t 8:     use all 8 threads. Default is 2, which bottlenecks prompt processing
+# -t:       use all CPU threads. Default is 2, which bottlenecks prompt processing
 #           (207 t/s with 2 threads vs 652 t/s with 8 threads on Qwen3.5-4B)
 # -c:       explicit context size. Without this, defaults to model's training context
 #           (e.g., 262k for Qwen3.5) which eats 8GB+ of RAM for KV cache alone
@@ -158,7 +162,7 @@ echo ""
 $LLAMA_SERVER \
     -m "$MODEL" \
     -ngl 99 \
-    -t 8 \
+    -t $THREADS \
     -c $CONTEXT \
     -fa \
     -b 4096 \

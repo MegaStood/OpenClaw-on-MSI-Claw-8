@@ -211,17 +211,18 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     # ----------------------------------------------------------
     echo ""
     echo "  Installing build dependencies..."
-    # shaderc provides glslc (Vulkan shader compiler) — without it cmake fails with:
+    # glslc provides the Vulkan shader compiler — without it cmake fails with:
     #   "Could NOT find Vulkan (missing: glslc)"
+    # Note: on Nobara 43+ the package is 'glslc', not 'shaderc'
     # nvtop provides GPU monitoring — intel_gpu_top does NOT work on the xe driver:
     #   "No device filter specified and no discrete/integrated i915 devices found"
-    dnf install -y cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel shaderc \
+    dnf install -y cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel \
         nvtop python3-pip 2>&1 | tail -1
 
-    # Verify glslc is available (most common build failure on Nobara)
+    # Install glslc (Vulkan shader compiler) — package name varies by distro
     if ! command -v glslc &>/dev/null; then
-        echo -e "${RED}  glslc not found after installing shaderc. Trying alternative...${NC}"
         dnf install -y glslc 2>/dev/null || \
+            dnf install -y shaderc 2>/dev/null || \
             dnf install -y glslang 2>/dev/null || \
             echo -e "${RED}  Could not install glslc. Vulkan build will likely fail.${NC}"
     fi
@@ -365,14 +366,14 @@ echo "────────────────────────�
 echo ""
 
 # -ngl 99: offload all layers to GPU (Vulkan). Without this, runs CPU-only
-# -t 8:    use all 8 threads. Default is 2, which bottlenecks prompt processing
+# -t:      use all CPU threads. Default is 2, which bottlenecks prompt processing
 #          (207 t/s with 2 threads vs 652 t/s with 8 threads on Qwen3.5-4B)
 # -c:      explicit context size. Without this, defaults to model's training context
 #          (e.g., 262k for Qwen3.5) which eats 8GB+ of RAM for KV cache alone
 $LLAMA_SERVER \
     -m "$MODEL" \
     -ngl 99 \
-    -t 8 \
+    -t \$(nproc) \
     -c $CONTEXT \
     $REASONING_ARGS
 RUNMODEL
@@ -562,7 +563,7 @@ else
     echo "  Skipping AI tools. You can install later:"
     echo ""
     echo "  # Install build tools and build llama.cpp"
-    echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel shaderc"
+    echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel glslc"
     echo "  git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp"
     echo "  cd ~/llama.cpp"
     echo "  cmake -B build -DGGML_VULKAN=ON"

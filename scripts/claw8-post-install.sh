@@ -1,6 +1,7 @@
 #!/bin/bash
 # ============================================================
-# MSI Claw 8 AI+ (Lunar Lake) — Nobara Post-Install Script
+# MSI Claw Post-Install Script (Claw 8 AI+ / Claw A1M)
+# Auto-detects hardware and adapts configuration accordingly
 # Run this ONCE after first boot and WiFi connection
 # Usage: chmod +x claw8-post-install.sh && sudo bash claw8-post-install.sh
 # ============================================================
@@ -13,10 +14,47 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# ============================================================
+# Hardware Detection
+# ============================================================
+GPU_ID=$(lspci -nnd ::0300 | grep 8086 | grep -oP '8086:\K[0-9a-fA-F]+' | head -1)
+GPU_DRIVER=$(lspci -k | grep -A3 'VGA\|3D\|Display' | grep 'Kernel driver' | awk '{print $NF}')
+CPU_MODEL=$(lscpu | grep 'Model name' | sed 's/.*: *//')
+CPU_THREADS=$(nproc)
+
+# Detect platform: Lunar Lake (Claw 8 AI+) vs Meteor Lake (Claw A1M) vs unknown
+if echo "$CPU_MODEL" | grep -qi "lunar\|288V\|288H\|268V\|268H\|256V\|258V"; then
+    PLATFORM="lunar_lake"
+    PLATFORM_NAME="Claw 8 AI+ (Lunar Lake)"
+    GPU_NAME="Arc 140V"
+    XE_RECOMMENDED=true
+elif echo "$CPU_MODEL" | grep -qi "meteor\|155H\|155U\|125H\|125U\|135H\|135U\|145H\|145U"; then
+    PLATFORM="meteor_lake"
+    PLATFORM_NAME="Claw A1M (Meteor Lake)"
+    GPU_NAME="Intel Arc Graphics"
+    # xe driver supported on Meteor Lake with kernel >= 6.17
+    KERN_MAJOR=$(uname -r | cut -d. -f1)
+    KERN_MINOR=$(uname -r | cut -d. -f2)
+    if [ "$KERN_MAJOR" -gt 6 ] || ([ "$KERN_MAJOR" -eq 6 ] && [ "$KERN_MINOR" -ge 17 ]); then
+        XE_RECOMMENDED=true
+    else
+        XE_RECOMMENDED=false
+    fi
+else
+    PLATFORM="unknown"
+    PLATFORM_NAME="Unknown MSI Claw"
+    GPU_NAME="Intel Arc Graphics"
+    XE_RECOMMENDED=false
+fi
+
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN} MSI Claw 8 AI+ Post-Install Setup${NC}"
+echo -e "${GREEN} MSI Claw Post-Install Setup${NC}"
 echo -e "${GREEN} Nobara Steam-Handheld Edition${NC}"
 echo -e "${GREEN}========================================${NC}"
+echo ""
+echo -e "  Detected: ${GREEN}${PLATFORM_NAME}${NC}"
+echo "  CPU:      $CPU_MODEL ($CPU_THREADS threads)"
+echo "  GPU:      $GPU_NAME (8086:$GPU_ID, driver: $GPU_DRIVER)"
 echo ""
 
 # Check if running as root
@@ -43,23 +81,26 @@ echo ""
 # ============================================================
 echo -e "${YELLOW}[2/7] Checking GPU driver...${NC}"
 
-GPU_DRIVER=$(lspci -k | grep -A3 'VGA\|3D\|Display' | grep 'Kernel driver' | awk '{print $NF}')
-GPU_ID=$(lspci -nnd ::03xx | grep 8086 | grep -oP '8086:\K[0-9a-fA-F]+')
-
 echo "  Current driver: $GPU_DRIVER"
 echo "  GPU device ID:  8086:$GPU_ID"
 
 if [ "$GPU_DRIVER" = "i915" ] && [ -n "$GPU_ID" ]; then
-    echo ""
-    echo -e "${YELLOW}  Your Arc 140V is using the older i915 driver.${NC}"
-    echo "  The xe driver is recommended for Xe2 (Lunar Lake) hardware."
-    read -p "  Switch to xe driver? (y/n): " SWITCH_XE
-    if [ "$SWITCH_XE" = "y" ] || [ "$SWITCH_XE" = "Y" ]; then
-        grubby --update-kernel=ALL --args="i915.force_probe=!${GPU_ID} xe.force_probe=${GPU_ID}"
-        echo -e "${GREEN}  xe driver will activate after reboot.${NC}"
-        echo "  To reverse: sudo grubby --update-kernel=ALL --remove-args='i915.force_probe=!${GPU_ID} xe.force_probe=${GPU_ID}'"
+    if [ "$XE_RECOMMENDED" = true ]; then
+        echo ""
+        echo -e "${YELLOW}  Your $GPU_NAME is using the older i915 driver.${NC}"
+        echo "  The xe driver is recommended for better performance."
+        read -p "  Switch to xe driver? (y/n): " SWITCH_XE
+        if [ "$SWITCH_XE" = "y" ] || [ "$SWITCH_XE" = "Y" ]; then
+            grubby --update-kernel=ALL --args="i915.force_probe=!${GPU_ID} xe.force_probe=${GPU_ID}"
+            echo -e "${GREEN}  xe driver will activate after reboot.${NC}"
+            echo "  To reverse: sudo grubby --update-kernel=ALL --remove-args='i915.force_probe=!${GPU_ID} xe.force_probe=${GPU_ID}'"
+        else
+            echo "  Keeping i915 driver."
+        fi
     else
-        echo "  Keeping i915 driver."
+        echo ""
+        echo -e "${YELLOW}  xe driver is not recommended for your hardware/kernel.${NC}"
+        echo "  Keeping i915 driver. Upgrade to kernel >= 6.17 to enable xe."
     fi
 elif [ "$GPU_DRIVER" = "xe" ]; then
     echo -e "${GREEN}  Already using xe driver. No changes needed.${NC}"
@@ -101,17 +142,19 @@ echo ""
 echo -e "${YELLOW}[4/7] Installing WiFi sleep fix...${NC}"
 
 # Find WiFi PCI address
-WIFI_PCI=$(lspci -nn | grep -i 'network\|wifi' | head -1 | awk '{print $1}')
+WIFI_PCI=$(lspci -nn | grep -i 'network\|wifi' | grep -iv 'system\|gaussian' | head -1 | awk '{print $1}')
 
 if [ -n "$WIFI_PCI" ]; then
     WIFI_FULL="0000:${WIFI_PCI}"
-    WIFI_NAME=$(lspci -nn | grep -i 'network\|wifi' | head -1)
+    WIFI_NAME=$(lspci -nn | grep -i 'network\|wifi' | grep -iv 'system\|gaussian' | head -1)
     echo "  Found WiFi device: $WIFI_NAME"
     echo "  PCI address: $WIFI_FULL"
 
-    # Method A: D3Cold fix
-    echo "  Installing Method A (D3Cold disable)..."
-    cat > /etc/systemd/system/fix-wifi-sleep.service << EOF
+    # Verify d3cold sysfs path exists before creating the service
+    if [ -e "/sys/bus/pci/devices/${WIFI_FULL}/d3cold_allowed" ]; then
+        # Method A: D3Cold fix
+        echo "  Installing Method A (D3Cold disable)..."
+        cat > /etc/systemd/system/fix-wifi-sleep.service << EOF
 [Unit]
 Description=Disable D3Cold for WiFi to fix sleep issue
 After=multi-user.target
@@ -124,9 +167,11 @@ RemainAfterExit=true
 [Install]
 WantedBy=multi-user.target
 EOF
-
-    systemctl daemon-reload
-    systemctl enable fix-wifi-sleep.service
+        systemctl daemon-reload
+        systemctl enable fix-wifi-sleep.service
+    else
+        echo -e "${YELLOW}  D3Cold sysfs path not found for ${WIFI_FULL}, skipping Method A.${NC}"
+    fi
 
     # Method B: Module reload on wake (backup)
     echo "  Installing Method B (module reload on wake) as backup..."
@@ -147,7 +192,7 @@ EOF
     systemctl daemon-reload
     systemctl enable wifi-resume.service
 
-    echo -e "${GREEN}[4/7] WiFi sleep fixes installed (both methods active).${NC}"
+    echo -e "${GREEN}[4/7] WiFi sleep fixes installed.${NC}"
 else
     echo -e "${RED}  Could not find WiFi device. You may need to set up the fix manually.${NC}"
     echo "  Run: lspci -nn | grep -i network"
@@ -163,7 +208,7 @@ mkdir -p /etc/systemd/
 if ! grep -q "AllowHibernation" /etc/systemd/sleep.conf 2>/dev/null; then
     cat >> /etc/systemd/sleep.conf << EOF
 
-# MSI Claw 8 AI+ — hibernate breaks Quick Resume
+# MSI Claw — hibernate breaks Quick Resume
 [Sleep]
 AllowHibernation=no
 AllowSuspendThenHibernate=no
@@ -181,7 +226,7 @@ echo ""
 echo -e "${YELLOW}[6/7] AI tools setup (llama.cpp with Vulkan GPU acceleration)...${NC}"
 echo ""
 echo "  Ollama does not support Vulkan on Intel iGPU — it runs CPU-only."
-echo "  llama.cpp with Vulkan gives ~2-3x faster token generation on Arc 140V."
+echo "  llama.cpp with Vulkan gives ~2-3x faster token generation on $GPU_NAME."
 echo ""
 
 # Create model directory with correct ownership
@@ -198,19 +243,24 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     # ----------------------------------------------------------
     echo ""
     echo "  Installing build dependencies..."
-    # shaderc provides glslc (Vulkan shader compiler) — without it cmake fails with:
+    # glslc provides the Vulkan shader compiler — without it cmake fails with:
     #   "Could NOT find Vulkan (missing: glslc)"
-    # nvtop provides GPU monitoring — intel_gpu_top does NOT work on the xe driver:
-    #   "No device filter specified and no discrete/integrated i915 devices found"
-    dnf install -y cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel shaderc \
-        nvtop python3-pip 2>&1 | tail -1
+    # On Nobara 43+, the package is 'glslc' (not 'shaderc').
+    # nvtop provides GPU monitoring — intel_gpu_top does NOT work on the xe driver.
+    dnf install -y cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel nvtop python3-pip 2>&1 | tail -1
 
-    # Verify glslc is available (most common build failure on Nobara)
+    # Install glslc: try 'glslc' first (Nobara 43+), fall back to 'shaderc' (older Fedora)
     if ! command -v glslc &>/dev/null; then
-        echo -e "${RED}  glslc not found after installing shaderc. Trying alternative...${NC}"
+        echo "  Installing Vulkan shader compiler (glslc)..."
         dnf install -y glslc 2>/dev/null || \
+            dnf install -y shaderc 2>/dev/null || \
             dnf install -y glslang 2>/dev/null || \
             echo -e "${RED}  Could not install glslc. Vulkan build will likely fail.${NC}"
+    fi
+
+    if ! command -v glslc &>/dev/null; then
+        echo -e "${RED}  glslc still not found. Vulkan build will likely fail.${NC}"
+        echo "  Try: sudo dnf install glslc"
     fi
 
     # ----------------------------------------------------------
@@ -230,7 +280,6 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
                 (cd $LLAMA_DIR && git pull)
             cd $LLAMA_DIR
             # Clean any previous build to avoid cmake cache issues
-            # (e.g., a prior build without Vulkan would cache DGGML_VULKAN=OFF)
             rm -rf build
             cmake -B build -DGGML_VULKAN=ON
             cmake --build build --config Release -j\$(nproc)
@@ -239,15 +288,12 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
         if [ -f "$LLAMA_SERVER" ]; then
             echo -e "${GREEN}  llama.cpp built successfully with Vulkan support.${NC}"
 
-            # Verify Vulkan is actually compiled in (not just a CPU-only build)
-            # Without Vulkan you get: "no usable GPU found, --gpu-layers option will be ignored"
-            echo "  Verifying Vulkan backend..."
-            VULKAN_CHECK=$(sudo -u "$REAL_USER" "$LLAMA_SERVER" --help 2>&1 | head -5)
-            if echo "$VULKAN_CHECK" | grep -qi "vulkan"; then
-                echo -e "${GREEN}  Vulkan backend confirmed working.${NC}"
+            # Verify Vulkan shared library was built
+            if [ -f "$LLAMA_DIR/build/bin/libggml-vulkan.so" ]; then
+                echo -e "${GREEN}  Vulkan backend library confirmed (libggml-vulkan.so).${NC}"
             else
-                echo -e "${YELLOW}  Warning: Vulkan may not be active. If GPU offload doesn't work,${NC}"
-                echo -e "${YELLOW}  rebuild with: cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j\$(nproc)${NC}"
+                echo -e "${YELLOW}  Warning: libggml-vulkan.so not found. GPU offload may not work.${NC}"
+                echo -e "${YELLOW}  Rebuild with: cd ~/llama.cpp && rm -rf build && cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j\$(nproc)${NC}"
             fi
         else
             echo -e "${RED}  llama.cpp build failed. Check errors above.${NC}"
@@ -260,6 +306,7 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     # Step C: Install run-model.sh launcher
     # ----------------------------------------------------------
     echo "  Installing model launcher script..."
+
     cat > "$REAL_HOME/run-model.sh" << 'RUNMODEL'
 #!/bin/bash
 # run-model.sh — auto-discover and launch GGUF models via llama.cpp
@@ -268,6 +315,10 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
 
 MODEL_DIR="/shared/models/gguf"
 LLAMA_SERVER="$HOME/llama.cpp/build/bin/llama-server"
+
+# Auto-detect thread count: physical cores (hyperthreads hurt matrix math throughput)
+THREADS=$(lscpu | awk '/^Core\(s\) per socket/ {print $NF}')
+THREADS=${THREADS:-$(nproc)}
 
 # Extract parameter count (in billions) from filename
 get_param_size() {
@@ -346,20 +397,20 @@ echo ""
 echo "Loading: $MODEL_NAME"
 echo "Params:  ~${PARAMS}B"
 echo "Mode:    $MODE_LABEL"
+echo "Threads: $THREADS"
 echo "API:     http://127.0.0.1:8080/v1/chat/completions"
 echo "Web UI:  http://127.0.0.1:8080"
 echo "───────────────────────────────────────────────────────────────────────────────"
 echo ""
 
 # -ngl 99: offload all layers to GPU (Vulkan). Without this, runs CPU-only
-# -t 8:    use all 8 threads. Default is 2, which bottlenecks prompt processing
-#          (207 t/s with 2 threads vs 652 t/s with 8 threads on Qwen3.5-4B)
+# -t N:    auto-detected physical core count for best throughput
 # -c:      explicit context size. Without this, defaults to model's training context
-#          (e.g., 262k for Qwen3.5) which eats 8GB+ of RAM for KV cache alone
+#          which can eat all RAM for KV cache alone
 $LLAMA_SERVER \
     -m "$MODEL" \
     -ngl 99 \
-    -t 8 \
+    -t $THREADS \
     -c $CONTEXT \
     $REASONING_ARGS
 RUNMODEL
@@ -549,7 +600,7 @@ else
     echo "  Skipping AI tools. You can install later:"
     echo ""
     echo "  # Install build tools and build llama.cpp"
-    echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel shaderc"
+    echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel glslc"
     echo "  git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp"
     echo "  cd ~/llama.cpp"
     echo "  cmake -B build -DGGML_VULKAN=ON"
@@ -568,6 +619,7 @@ echo ""
 # ============================================================
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN} Setup Complete! Summary:${NC}"
+echo -e "${GREEN} Platform: ${PLATFORM_NAME}${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "  [✓] System updated via nobara-sync"
@@ -578,7 +630,7 @@ echo "  [✓] WiFi sleep fix installed (D3Cold + module reload)"
 echo "  [✓] Hibernate disabled"
 if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     echo "  [✓] llama.cpp built with Vulkan GPU acceleration"
-    echo "  [✓] Model launcher installed: ~/run-model.sh"
+    echo "  [✓] Model launcher installed: ~/run-model.sh (threads: $PHYS_CORES)"
     case $PULLED_MODEL in
         local)
             echo "  [✓] Downloaded $MODEL_DISPLAY to /shared/models/gguf/"

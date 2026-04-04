@@ -25,7 +25,21 @@ MODEL_DIR="${MODEL_DIR:-/shared/models/gguf}"
 LLAMA_SERVER="${LLAMA_SERVER:-$HOME/llama.cpp/build/bin/llama-server}"
 LLAMA_BENCH="${LLAMA_BENCH:-$HOME/llama.cpp/build/bin/llama-bench}"
 PIDFILE="${PIDFILE:-$HOME/.llama-server.pid}"
-AVAILABLE_VRAM=24  # Arc 140V usable shared VRAM in GB
+# Auto-detect thread count: use physical cores (hyperthreads add overhead for matrix math)
+THREADS="${THREADS:-$(lscpu | awk '/^Core\(s\) per socket/ {print $NF}')}"
+THREADS="${THREADS:-$(nproc)}"
+# Auto-detect usable VRAM from total system RAM.
+# Intel iGPU shares system RAM — usable VRAM is ~89% of physical
+# (verified: 28.57 GiB from 32GB on Claw 8 AI+ via torch.xpu).
+# For exact value, run: torch.xpu.get_device_properties(0).total_memory
+TOTAL_RAM_GB=$(awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo)
+if [ "$TOTAL_RAM_GB" -ge 28 ]; then
+    AVAILABLE_VRAM=24
+elif [ "$TOTAL_RAM_GB" -ge 14 ]; then
+    AVAILABLE_VRAM=12
+else
+    AVAILABLE_VRAM=8
+fi
 
 # ── Parse flags ──────────────────────────────────────────────────────────────
 
@@ -105,7 +119,7 @@ if [ "$ACTION" = "serve" ]; then
         echo "Error: llama-server not found at $LLAMA_SERVER"
         echo ""
         echo "Build llama.cpp with Vulkan support first:"
-        echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel shaderc"
+        echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel glslc"
         echo "  git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp"
         echo "  cd ~/llama.cpp && cmake -B build -DGGML_VULKAN=ON"
         echo "  cmake --build build --config Release -j\$(nproc)"
@@ -277,7 +291,7 @@ if [ "$ACTION" = "bench" ]; then
     echo "Benchmarking: $MODEL_NAME"
     echo "───────────────────────────────────────────────────────────────────────────────"
     # -ngl 99: GPU offload all layers
-    # -t 8:    8 threads (matching Lunar Lake 4P+4E)
+    # -t N:    use auto-detected physical core count
     # -r 2:    repeat each test twice for reliable averages
     # -p:      prompt processing at 4 context sizes
     # -n:      token generation at 3 output lengths
@@ -285,7 +299,7 @@ if [ "$ACTION" = "bench" ]; then
     "$LLAMA_BENCH" \
         -m "$MODEL" \
         -ngl 99 \
-        -t 8 \
+        -t "$THREADS" \
         -r 2 \
         -p 512,2048,8192,32768 \
         -n 128,256,512 \
@@ -331,8 +345,8 @@ echo "────────────────────────�
 echo ""
 
 # -ngl 99: offload all layers to GPU (Vulkan). Without this, runs CPU-only
-# -t 8:    use all 8 threads. Default is 2, which bottlenecks prompt processing
-#          (207 t/s with 2 threads vs 652 t/s with 8 threads on Qwen3.5-4B)
+# -t N:    use auto-detected physical core count. Default of 2 bottlenecks prompt
+#          processing (207 t/s with 2 threads vs 652 t/s with 8 on Qwen3.5-4B)
 # -c:      explicit context size. Without this, defaults to model's training context
 #          (e.g., 262k for Qwen3.5) which eats 8GB+ of RAM for KV cache alone
 # --jinja: enables proper tool call format parsing (required for OpenClaw tool calling)
@@ -341,7 +355,7 @@ if [ "$DETACH" = true ]; then
     "$LLAMA_SERVER" \
         -m "$MODEL" \
         -ngl 99 \
-        -t 8 \
+        -t "$THREADS" \
         -c "$CONTEXT" \
         --jinja \
         "${REASONING_ARGS[@]}" \
@@ -358,7 +372,7 @@ else
     "$LLAMA_SERVER" \
         -m "$MODEL" \
         -ngl 99 \
-        -t 8 \
+        -t "$THREADS" \
         -c "$CONTEXT" \
         --jinja \
         "${REASONING_ARGS[@]}" \

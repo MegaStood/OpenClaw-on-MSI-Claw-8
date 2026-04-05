@@ -3,7 +3,7 @@
 # MSI Claw Post-Install Script (Claw 8 AI+ / Claw A1M)
 # Auto-detects hardware and adapts configuration accordingly
 # Run this ONCE after first boot and WiFi connection
-# Usage: chmod +x claw8-post-install.sh && sudo bash claw8-post-install.sh
+# Usage: chmod +x claw-post-install-llama.sh && sudo bash claw-post-install-llama.sh
 # ============================================================
 
 set -e
@@ -59,7 +59,7 @@ echo ""
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Please run with sudo: sudo bash claw8-post-install.sh${NC}"
+    echo -e "${RED}Please run with sudo: sudo bash claw-post-install-llama.sh${NC}"
     exit 1
 fi
 

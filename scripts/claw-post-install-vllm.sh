@@ -440,13 +440,13 @@ ONEAPI_REPO
         cat >> "$BASHRC" << VLLM_ENV
 
 # vLLM XPU environment (added by claw-post-install-vllm.sh)
+source /opt/intel/oneapi/setvars.sh --force 2>/dev/null || true
+export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH}:/usr/local/lib/"
 export VLLM_TARGET_DEVICE=xpu
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export VLLM_QUANTIZE_Q40_LIB="${Q40_LIB}"
 export VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT=1
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
-export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH}:/usr/local/lib/"
-source /opt/intel/oneapi/setvars.sh --force 2>/dev/null || true
 VLLM_ENV
         echo -e "${GREEN}  vLLM env vars added to ~/.bashrc${NC}"
     else

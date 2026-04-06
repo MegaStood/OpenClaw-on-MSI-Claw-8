@@ -266,11 +266,19 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     # ----------------------------------------------------------
     echo ""
     echo "  Installing system build dependencies..."
-    # vLLM + intel_extension_for_pytorch require Python 3.12 (cp312 wheels).
-    # Nobara 43 ships Python 3.14 — install 3.12 alongside it.
-    dnf install -y cmake gcc gcc-c++ git python3.12 python3.12-devel \
+    dnf install -y cmake gcc gcc-c++ git \
         numactl wget curl vim ffmpeg libsndfile-devel \
         libSM libXext libaio-devel mesa-libGL nvtop 2>&1 | tail -1
+
+    # vLLM + intel_extension_for_pytorch require Python 3.12 (cp312 wheels).
+    # Nobara 43 ships Python 3.14 — install 3.12 alongside it.
+    # Separate dnf call so a failure here is not hidden by --skip-broken.
+    if ! command -v python3.12 &>/dev/null; then
+        echo "  Installing Python 3.12 (required for vLLM XPU wheels)..."
+        dnf install -y python3.12 python3.12-devel
+    else
+        echo "  Python 3.12 already installed: $(python3.12 --version)"
+    fi
 
     # ----------------------------------------------------------
     # Step C2: Create Python 3.12 virtual environment

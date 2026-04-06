@@ -266,9 +266,26 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     # ----------------------------------------------------------
     echo ""
     echo "  Installing system build dependencies..."
-    dnf install -y cmake gcc gcc-c++ git python3 python3-devel python3-pip \
+    # vLLM + intel_extension_for_pytorch require Python 3.12 (cp312 wheels).
+    # Nobara 43 ships Python 3.14 — install 3.12 alongside it.
+    dnf install -y cmake gcc gcc-c++ git python3.12 python3.12-devel \
         numactl wget curl vim ffmpeg libsndfile-devel \
         libSM libXext libaio-devel mesa-libGL nvtop 2>&1 | tail -1
+
+    # ----------------------------------------------------------
+    # Step C2: Create Python 3.12 virtual environment
+    # ----------------------------------------------------------
+    VLLM_VENV="$REAL_HOME/vllm-venv"
+    if [ -d "$VLLM_VENV" ] && [ -f "$VLLM_VENV/bin/python" ]; then
+        echo -e "${GREEN}  Python 3.12 venv already exists at $VLLM_VENV${NC}"
+    else
+        echo "  Creating Python 3.12 virtual environment at $VLLM_VENV..."
+        sudo -u "$REAL_USER" python3.12 -m venv "$VLLM_VENV"
+    fi
+    # Activate venv — all pip/python commands below use Python 3.12
+    source "$VLLM_VENV/bin/activate"
+    pip install --upgrade pip setuptools wheel 2>&1 | tail -1
+    echo "  Using Python: $(python --version) from $(which python)"
 
     # ----------------------------------------------------------
     # Step D: Install Intel oneAPI DPCPP-CT
@@ -346,17 +363,14 @@ ONEAPI_REPO
     # ----------------------------------------------------------
     VLLM_CHECK=$(pip show vllm 2>/dev/null | grep -c "Name: vllm" || true)
     if [ "$VLLM_CHECK" -gt 0 ]; then
-        echo -e "${GREEN}  vLLM already installed. Skipping build.${NC}"
-        echo "  To rebuild: pip uninstall vllm -y && re-run this script."
+        echo -e "${GREEN}  vLLM already installed in venv. Skipping build.${NC}"
+        echo "  To rebuild: source ~/vllm-venv/bin/activate && pip uninstall vllm -y && re-run this script."
     else
         echo ""
         echo "  Building vLLM with MAX_JOBS=$MAX_JOBS (this will take a while)..."
         echo "  On 16GB RAM this can take 30-60 minutes. Do not interrupt."
         echo ""
         cd "$VLLM_DIR"
-
-        # Allow pip to install packages system-wide
-        python3 -m pip config set global.break-system-packages true 2>/dev/null || true
 
         echo "  Installing XPU requirements..."
         pip install -r requirements/xpu.txt 2>&1 | tail -3
@@ -372,6 +386,7 @@ ONEAPI_REPO
         else
             echo -e "${RED}  vLLM build failed. Check errors above.${NC}"
             echo "  You can retry manually:"
+            echo "    source ~/vllm-venv/bin/activate"
             echo "    cd ~/vllm && MAX_JOBS=$MAX_JOBS pip install --no-build-isolation ."
         fi
     fi
@@ -432,14 +447,15 @@ ONEAPI_REPO
     echo "  Configuring vLLM environment in ~/.bashrc..."
     BASHRC="$REAL_HOME/.bashrc"
 
-    # Find the python site-packages path for the quantization library
-    SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "/usr/local/lib/python3.12/dist-packages")
+    # Find the python site-packages path for the quantization library (inside venv)
+    SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "$VLLM_VENV/lib/python3.12/site-packages")
     Q40_LIB="${SITE_PACKAGES}/vllm_int4_for_multi_arc.so"
 
     if ! grep -q "VLLM_TARGET_DEVICE" "$BASHRC" 2>/dev/null; then
         cat >> "$BASHRC" << VLLM_ENV
 
 # vLLM XPU environment (added by claw-post-install-vllm.sh)
+source ${VLLM_VENV}/bin/activate
 export VLLM_TARGET_DEVICE=xpu
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export VLLM_QUANTIZE_Q40_LIB="${Q40_LIB}"
@@ -636,6 +652,7 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
     echo "  │  Serve a model:                                                 │"
+    echo "  │    source ~/vllm-venv/bin/activate                              │"
     echo "  │    source /opt/intel/oneapi/setvars.sh                          │"
     echo "  │    vllm serve /shared/models/<model> \\                         │"
     echo "  │      --device xpu --gpu-memory-utilization 0.6 --enforce-eager  │"
@@ -664,7 +681,8 @@ echo "  3. Sound plays through speakers"
 echo "  4. GPU driver: lspci -k | grep -EA3 'VGA|3D|Display'"
 echo "  5. Switch to Gaming Mode and test Steam"
 if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
-    echo "  6. Source oneAPI and run: vllm serve /shared/models/<model> --device xpu"
+    echo "  6. Activate venv + oneAPI: source ~/vllm-venv/bin/activate && source /opt/intel/oneapi/setvars.sh"
+    echo "     Then run: vllm serve /shared/models/<model> --device xpu"
     echo "  7. Monitor GPU usage: nvtop (intel_gpu_top does NOT work on xe driver)"
 fi
 echo ""

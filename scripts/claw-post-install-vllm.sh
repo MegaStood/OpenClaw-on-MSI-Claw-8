@@ -586,7 +586,7 @@ ONEAPI_REPO
             export MAX_JOBS=$MAX_JOBS
             export TMPDIR=$REAL_HOME/.pip-tmp
             cd $XPU_KERNELS_DIR
-            pip install --no-build-isolation . 2>&1 | tee $XPU_BUILD_LOG
+            pip install --no-build-isolation -v . 2>&1 | tee $XPU_BUILD_LOG
             echo \${PIPESTATUS[0]} > $XPU_EXIT_FILE
         " | while IFS= read -r line; do
             if [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\] ]]; then

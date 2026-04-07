@@ -67,6 +67,108 @@ REAL_USER=${SUDO_USER:-$USER}
 REAL_HOME=$(eval echo ~"$REAL_USER")
 
 # ============================================================
+# PHASE 0: Swap optimization
+# ============================================================
+TOTAL_RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
+ZRAM_ACTIVE=$(swapon --show=NAME,TYPE --noheadings 2>/dev/null | grep -c zram || true)
+DISK_SWAP_CREATED=false   # Tracks user's swap choice for MAX_JOBS in Step A
+SWAPFILE="$REAL_HOME/swapfile"
+FS_TYPE=$(df -T "$REAL_HOME" | awk 'NR==2{print $2}')
+
+# Helper: create a disk swapfile if it doesn't already exist
+create_swapfile() {
+    local size="$1"
+    if [ -f "$SWAPFILE" ]; then
+        echo -e "${GREEN}  Swapfile already exists at $SWAPFILE. Activating.${NC}"
+    else
+        echo "  Creating ${size} disk swapfile..."
+        if [ "$FS_TYPE" = "btrfs" ]; then
+            btrfs filesystem mkswapfile --size "$size" "$SWAPFILE"
+        else
+            fallocate -l "$size" "$SWAPFILE"
+            chmod 600 "$SWAPFILE"
+            mkswap "$SWAPFILE"
+        fi
+    fi
+}
+
+if [ "$TOTAL_RAM_GB" -le 16 ]; then
+    # ── Meteor Lake / 16GB ──────────────────────────────────
+    # zram wastes precious RAM and the build WILL OOM without disk swap.
+    # (Tested: peak 14GB RAM + 8GB swap during xpu-kernels compilation.)
+    # No user prompt — this is required, not optional.
+    if [ "$ZRAM_ACTIVE" -gt 0 ]; then
+        echo -e "${YELLOW}[0/7] Swap optimization (16GB system)...${NC}"
+        echo ""
+        echo "  Replacing zram with 16GB disk swapfile (required for 16GB builds)."
+        echo "  zram + 16GB RAM cannot survive the xpu-kernels compilation."
+        echo ""
+
+        echo "  Disabling zram permanently..."
+        swapoff /dev/zram0 2>/dev/null || true
+        zramctl --reset /dev/zram0 2>/dev/null || true
+        systemctl mask systemd-zram-setup@zram0.service 2>/dev/null || true
+
+        create_swapfile 16G
+        swapon "$SWAPFILE"
+        sysctl vm.swappiness=10
+        echo "vm.swappiness=10" > /etc/sysctl.d/99-swappiness.conf
+
+        if ! grep -q "$SWAPFILE" /etc/fstab 2>/dev/null; then
+            echo "$SWAPFILE none swap defaults 0 0" >> /etc/fstab
+        fi
+
+        DISK_SWAP_CREATED=true
+        echo -e "${GREEN}  zram permanently disabled, 16GB disk swapfile active.${NC}"
+        echo "  To reverse: sudo swapoff $SWAPFILE && sudo systemctl unmask systemd-zram-setup@zram0.service"
+        echo ""
+    fi
+
+elif [ "$TOTAL_RAM_GB" -le 32 ]; then
+    # ── Lunar Lake / 32GB ───────────────────────────────────
+    # zram is fine for daily use. Temporarily disable it during the build,
+    # and create a permanent low-priority disk swapfile as overflow.
+    echo -e "${YELLOW}[0/7] Swap optimization (32GB system)...${NC}"
+    echo ""
+
+    # Create persistent disk swapfile if not already present
+    if ! swapon --show=NAME --noheadings 2>/dev/null | grep -q "$SWAPFILE"; then
+        echo "  A 32GB disk swapfile provides a safety net for heavy builds"
+        echo "  and LLM inference, without replacing zram for daily use."
+        echo "  zram stays active after reboot (higher priority = used first)."
+        echo "  The disk swapfile only kicks in when zram overflows."
+        echo ""
+        read -p "  Create 32GB disk swapfile as overflow? (y/n): " SWAP_CHOICE
+
+        if [ "$SWAP_CHOICE" = "y" ] || [ "$SWAP_CHOICE" = "Y" ]; then
+            create_swapfile 32G
+            # Low priority (10) so zram (default ~100) is preferred after reboot
+            swapon --priority 10 "$SWAPFILE"
+
+            if ! grep -q "$SWAPFILE" /etc/fstab 2>/dev/null; then
+                echo "$SWAPFILE none swap pri=10 0 0" >> /etc/fstab
+            fi
+
+            DISK_SWAP_CREATED=true
+            echo -e "${GREEN}  32GB disk swapfile active (priority 10, below zram).${NC}"
+        else
+            echo "  Skipping disk swapfile."
+        fi
+    else
+        echo -e "${GREEN}  Disk swapfile already active. Skipping.${NC}"
+    fi
+
+    # Temporarily disable zram for the build to free all 32GB RAM
+    if [ "$ZRAM_ACTIVE" -gt 0 ]; then
+        echo "  Temporarily disabling zram for the build (returns on reboot)..."
+        swapoff /dev/zram0 2>/dev/null || true
+        zramctl --reset /dev/zram0 2>/dev/null || true
+        echo -e "${GREEN}  zram disabled for this session. It will return after reboot.${NC}"
+    fi
+    echo ""
+fi
+
+# ============================================================
 # PHASE 1: System Update
 # ============================================================
 echo -e "${YELLOW}[1/7] Updating system with nobara-sync...${NC}"
@@ -236,7 +338,11 @@ TOTAL_RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
 if [ "$TOTAL_RAM_GB" -le 16 ]; then
     export MAX_JOBS=3   # Claw A1M (16GB)
 elif [ "$TOTAL_RAM_GB" -le 32 ]; then
-    export MAX_JOBS=6   # Claw 8 AI+ (32GB)
+    if [ "$DISK_SWAP_CREATED" = true ]; then
+        export MAX_JOBS=6   # Claw 8 AI+ (32GB) — disk swap available as overflow
+    else
+        export MAX_JOBS=4   # zram active, less usable RAM for compilation
+    fi
 else
     export MAX_JOBS=8
 fi
@@ -266,9 +372,41 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     # ----------------------------------------------------------
     echo ""
     echo "  Installing system build dependencies..."
-    dnf install -y cmake gcc gcc-c++ git python3 python3-devel python3-pip \
+    dnf install -y cmake gcc gcc-c++ git \
         numactl wget curl vim ffmpeg libsndfile-devel \
         libSM libXext libaio-devel mesa-libGL nvtop 2>&1 | tail -1
+
+    # vLLM + intel_extension_for_pytorch require Python 3.12 (cp312 wheels).
+    # Nobara 43 ships Python 3.14 — install 3.12 alongside it.
+    # Separate dnf call so a failure here is not hidden by --skip-broken.
+    if ! command -v python3.12 &>/dev/null; then
+        echo "  Installing Python 3.12 (required for vLLM XPU wheels)..."
+        dnf install -y python3.12 python3.12-devel
+    else
+        echo "  Python 3.12 already installed: $(python3.12 --version)"
+    fi
+
+    # ----------------------------------------------------------
+    # Step C2: Create Python 3.12 virtual environment
+    # ----------------------------------------------------------
+    VLLM_VENV="$REAL_HOME/vllm-venv"
+    if [ -d "$VLLM_VENV" ] && [ -f "$VLLM_VENV/bin/python" ]; then
+        echo -e "${GREEN}  Python 3.12 venv already exists at $VLLM_VENV${NC}"
+    else
+        echo "  Creating Python 3.12 virtual environment at $VLLM_VENV..."
+        sudo -u "$REAL_USER" python3.12 -m venv "$VLLM_VENV"
+    fi
+    # Activate venv — all pip/python commands below use Python 3.12
+    source "$VLLM_VENV/bin/activate"
+
+    # Redirect pip temp files to disk — /tmp is a tmpfs (RAM-backed, ~7.6GB)
+    # and large XPU wheels will fill it, causing "No space left on device".
+    export TMPDIR="$REAL_HOME/.pip-tmp"
+    mkdir -p "$TMPDIR"
+    chown "$REAL_USER:$REAL_USER" "$TMPDIR"
+
+    pip install --upgrade pip setuptools wheel 2>&1 | tail -1
+    echo "  Using Python: $(python --version) from $(which python)"
 
     # ----------------------------------------------------------
     # Step D: Install Intel oneAPI DPCPP-CT
@@ -289,8 +427,8 @@ ONEAPI_REPO
         echo "  oneAPI repo already configured."
     fi
 
-    echo "  Installing intel-oneapi-dpcpp-ct (this may take a while)..."
-    dnf install -y intel-oneapi-dpcpp-ct 2>&1 | tail -3
+    echo "  Installing Intel DPC++ compiler + compatibility tool (this may take a while)..."
+    dnf install -y intel-oneapi-dpcpp-cpp intel-oneapi-dpcpp-ct 2>&1 | tail -3
 
     # ----------------------------------------------------------
     # Step E: Set build environment variables
@@ -346,17 +484,14 @@ ONEAPI_REPO
     # ----------------------------------------------------------
     VLLM_CHECK=$(pip show vllm 2>/dev/null | grep -c "Name: vllm" || true)
     if [ "$VLLM_CHECK" -gt 0 ]; then
-        echo -e "${GREEN}  vLLM already installed. Skipping build.${NC}"
-        echo "  To rebuild: pip uninstall vllm -y && re-run this script."
+        echo -e "${GREEN}  vLLM already installed in venv. Skipping build.${NC}"
+        echo "  To rebuild: source ~/vllm-venv/bin/activate && pip uninstall vllm -y && re-run this script."
     else
         echo ""
         echo "  Building vLLM with MAX_JOBS=$MAX_JOBS (this will take a while)..."
         echo "  On 16GB RAM this can take 30-60 minutes. Do not interrupt."
         echo ""
         cd "$VLLM_DIR"
-
-        # Allow pip to install packages system-wide
-        python3 -m pip config set global.break-system-packages true 2>/dev/null || true
 
         echo "  Installing XPU requirements..."
         pip install -r requirements/xpu.txt 2>&1 | tail -3
@@ -372,6 +507,7 @@ ONEAPI_REPO
         else
             echo -e "${RED}  vLLM build failed. Check errors above.${NC}"
             echo "  You can retry manually:"
+            echo "    source ~/vllm-venv/bin/activate"
             echo "    cd ~/vllm && MAX_JOBS=$MAX_JOBS pip install --no-build-isolation ."
         fi
     fi
@@ -408,8 +544,19 @@ ONEAPI_REPO
         sed -i 's|^triton-xpu|# triton-xpu|' requirements.txt
         sed -i 's|^transformers|# transformers|' requirements.txt
 
+        # Fix ownership — sed and prior pip runs as root can leave root-owned files
+        chown -R "$REAL_USER:$REAL_USER" "$XPU_KERNELS_DIR"
+
         pip install -r requirements.txt 2>&1 | tail -1
-        pip install --no-build-isolation . 2>&1 | tail -3
+
+        echo ""
+        echo -e "${YELLOW}  ┌─────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${YELLOW}  │  Compiling vllm-xpu-kernels (oneDNN + SYCL kernels)...      │${NC}"
+        echo -e "${YELLOW}  │  This takes 30-70 minutes. The terminal may appear frozen    │${NC}"
+        echo -e "${YELLOW}  │  — DO NOT close this window or press Ctrl+C.                 │${NC}"
+        echo -e "${YELLOW}  └─────────────────────────────────────────────────────────────┘${NC}"
+        echo ""
+        pip install --no-build-isolation . 2>&1 | tail -5
 
         if pip show vllm-xpu-kernels &>/dev/null; then
             echo -e "${GREEN}  vllm-xpu-kernels built successfully.${NC}"
@@ -432,21 +579,24 @@ ONEAPI_REPO
     echo "  Configuring vLLM environment in ~/.bashrc..."
     BASHRC="$REAL_HOME/.bashrc"
 
-    # Find the python site-packages path for the quantization library
-    SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "/usr/local/lib/python3.12/dist-packages")
+    # Find the python site-packages path for the quantization library (inside venv)
+    SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "$VLLM_VENV/lib/python3.12/site-packages")
     Q40_LIB="${SITE_PACKAGES}/vllm_int4_for_multi_arc.so"
 
     if ! grep -q "VLLM_TARGET_DEVICE" "$BASHRC" 2>/dev/null; then
         cat >> "$BASHRC" << VLLM_ENV
 
 # vLLM XPU environment (added by claw-post-install-vllm.sh)
+# oneAPI must be sourced FIRST — it resets LD_LIBRARY_PATH to its own paths.
+# Our exports below then append to it rather than being overwritten.
 source /opt/intel/oneapi/setvars.sh --force 2>/dev/null || true
-export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH}:/usr/local/lib/"
+source ${VLLM_VENV}/bin/activate
 export VLLM_TARGET_DEVICE=xpu
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export VLLM_QUANTIZE_Q40_LIB="${Q40_LIB}"
 export VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT=1
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH}:/usr/local/lib/"
 VLLM_ENV
         echo -e "${GREEN}  vLLM env vars added to ~/.bashrc${NC}"
     else
@@ -591,6 +741,10 @@ VLLM_ENV
         echo "    ~/OpenClaw-on-MSI-Claw-8/scripts/download_model_fast.sh <repo_id>"
     fi
 
+    # Clean up pip temp directory
+    rm -rf "$TMPDIR"
+    unset TMPDIR
+
 else
     PULLED_MODEL="skipped"
     echo "  Skipping vLLM. You can install later by re-running this script."
@@ -636,6 +790,7 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
     echo "  │  Serve a model:                                                 │"
+    echo "  │    source ~/vllm-venv/bin/activate                              │"
     echo "  │    source /opt/intel/oneapi/setvars.sh                          │"
     echo "  │    vllm serve /shared/models/<model> \\                         │"
     echo "  │      --device xpu --gpu-memory-utilization 0.6 --enforce-eager  │"
@@ -664,7 +819,8 @@ echo "  3. Sound plays through speakers"
 echo "  4. GPU driver: lspci -k | grep -EA3 'VGA|3D|Display'"
 echo "  5. Switch to Gaming Mode and test Steam"
 if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
-    echo "  6. Source oneAPI and run: vllm serve /shared/models/<model> --device xpu"
+    echo "  6. Activate venv + oneAPI: source ~/vllm-venv/bin/activate && source /opt/intel/oneapi/setvars.sh"
+    echo "     Then run: vllm serve /shared/models/<model> --device xpu"
     echo "  7. Monitor GPU usage: nvtop (intel_gpu_top does NOT work on xe driver)"
 fi
 echo ""

@@ -67,6 +67,108 @@ REAL_USER=${SUDO_USER:-$USER}
 REAL_HOME=$(eval echo ~"$REAL_USER")
 
 # ============================================================
+# PHASE 0: Swap optimization
+# ============================================================
+TOTAL_RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
+ZRAM_ACTIVE=$(swapon --show=NAME,TYPE --noheadings 2>/dev/null | grep -c zram || true)
+DISK_SWAP_CREATED=false   # Tracks user's swap choice for MAX_JOBS in Step A
+SWAPFILE="$REAL_HOME/swapfile"
+FS_TYPE=$(df -T "$REAL_HOME" | awk 'NR==2{print $2}')
+
+# Helper: create a disk swapfile if it doesn't already exist
+create_swapfile() {
+    local size="$1"
+    if [ -f "$SWAPFILE" ]; then
+        echo -e "${GREEN}  Swapfile already exists at $SWAPFILE. Activating.${NC}"
+    else
+        echo "  Creating ${size} disk swapfile..."
+        if [ "$FS_TYPE" = "btrfs" ]; then
+            btrfs filesystem mkswapfile --size "$size" "$SWAPFILE"
+        else
+            fallocate -l "$size" "$SWAPFILE"
+            chmod 600 "$SWAPFILE"
+            mkswap "$SWAPFILE"
+        fi
+    fi
+}
+
+if [ "$TOTAL_RAM_GB" -le 16 ]; then
+    # ── Meteor Lake / 16GB ──────────────────────────────────
+    # zram wastes precious RAM and the build WILL OOM without disk swap.
+    # (Tested: peak 14GB RAM + 8GB swap during xpu-kernels compilation.)
+    # No user prompt — this is required, not optional.
+    if [ "$ZRAM_ACTIVE" -gt 0 ]; then
+        echo -e "${YELLOW}[0/7] Swap optimization (16GB system)...${NC}"
+        echo ""
+        echo "  Replacing zram with 16GB disk swapfile (required for 16GB builds)."
+        echo "  zram + 16GB RAM cannot survive the xpu-kernels compilation."
+        echo ""
+
+        echo "  Disabling zram permanently..."
+        swapoff /dev/zram0 2>/dev/null || true
+        zramctl --reset /dev/zram0 2>/dev/null || true
+        systemctl mask systemd-zram-setup@zram0.service 2>/dev/null || true
+
+        create_swapfile 16G
+        swapon "$SWAPFILE"
+        sysctl vm.swappiness=10
+        echo "vm.swappiness=10" > /etc/sysctl.d/99-swappiness.conf
+
+        if ! grep -q "$SWAPFILE" /etc/fstab 2>/dev/null; then
+            echo "$SWAPFILE none swap defaults 0 0" >> /etc/fstab
+        fi
+
+        DISK_SWAP_CREATED=true
+        echo -e "${GREEN}  zram permanently disabled, 16GB disk swapfile active.${NC}"
+        echo "  To reverse: sudo swapoff $SWAPFILE && sudo systemctl unmask systemd-zram-setup@zram0.service"
+        echo ""
+    fi
+
+elif [ "$TOTAL_RAM_GB" -le 32 ]; then
+    # ── Lunar Lake / 32GB ───────────────────────────────────
+    # zram is fine for daily use. Temporarily disable it during the build,
+    # and create a permanent low-priority disk swapfile as overflow.
+    echo -e "${YELLOW}[0/7] Swap optimization (32GB system)...${NC}"
+    echo ""
+
+    # Create persistent disk swapfile if not already present
+    if ! swapon --show=NAME --noheadings 2>/dev/null | grep -q "$SWAPFILE"; then
+        echo "  A 32GB disk swapfile provides a safety net for heavy builds"
+        echo "  and LLM inference, without replacing zram for daily use."
+        echo "  zram stays active after reboot (higher priority = used first)."
+        echo "  The disk swapfile only kicks in when zram overflows."
+        echo ""
+        read -p "  Create 32GB disk swapfile as overflow? (y/n): " SWAP_CHOICE
+
+        if [ "$SWAP_CHOICE" = "y" ] || [ "$SWAP_CHOICE" = "Y" ]; then
+            create_swapfile 32G
+            # Low priority (10) so zram (default ~100) is preferred after reboot
+            swapon --priority 10 "$SWAPFILE"
+
+            if ! grep -q "$SWAPFILE" /etc/fstab 2>/dev/null; then
+                echo "$SWAPFILE none swap pri=10 0 0" >> /etc/fstab
+            fi
+
+            DISK_SWAP_CREATED=true
+            echo -e "${GREEN}  32GB disk swapfile active (priority 10, below zram).${NC}"
+        else
+            echo "  Skipping disk swapfile."
+        fi
+    else
+        echo -e "${GREEN}  Disk swapfile already active. Skipping.${NC}"
+    fi
+
+    # Temporarily disable zram for the build to free all 32GB RAM
+    if [ "$ZRAM_ACTIVE" -gt 0 ]; then
+        echo "  Temporarily disabling zram for the build (returns on reboot)..."
+        swapoff /dev/zram0 2>/dev/null || true
+        zramctl --reset /dev/zram0 2>/dev/null || true
+        echo -e "${GREEN}  zram disabled for this session. It will return after reboot.${NC}"
+    fi
+    echo ""
+fi
+
+# ============================================================
 # PHASE 1: System Update
 # ============================================================
 echo -e "${YELLOW}[1/7] Updating system with nobara-sync...${NC}"
@@ -236,7 +338,11 @@ TOTAL_RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
 if [ "$TOTAL_RAM_GB" -le 16 ]; then
     export MAX_JOBS=3   # Claw A1M (16GB)
 elif [ "$TOTAL_RAM_GB" -le 32 ]; then
-    export MAX_JOBS=6   # Claw 8 AI+ (32GB)
+    if [ "$DISK_SWAP_CREATED" = true ]; then
+        export MAX_JOBS=6   # Claw 8 AI+ (32GB) — disk swap available as overflow
+    else
+        export MAX_JOBS=4   # zram active, less usable RAM for compilation
+    fi
 else
     export MAX_JOBS=8
 fi
@@ -292,6 +398,13 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     fi
     # Activate venv — all pip/python commands below use Python 3.12
     source "$VLLM_VENV/bin/activate"
+
+    # Redirect pip temp files to disk — /tmp is a tmpfs (RAM-backed, ~7.6GB)
+    # and large XPU wheels will fill it, causing "No space left on device".
+    export TMPDIR="$REAL_HOME/.pip-tmp"
+    mkdir -p "$TMPDIR"
+    chown "$REAL_USER:$REAL_USER" "$TMPDIR"
+
     pip install --upgrade pip setuptools wheel 2>&1 | tail -1
     echo "  Using Python: $(python --version) from $(which python)"
 
@@ -314,8 +427,8 @@ ONEAPI_REPO
         echo "  oneAPI repo already configured."
     fi
 
-    echo "  Installing intel-oneapi-dpcpp-ct (this may take a while)..."
-    dnf install -y intel-oneapi-dpcpp-ct 2>&1 | tail -3
+    echo "  Installing Intel DPC++ compiler + compatibility tool (this may take a while)..."
+    dnf install -y intel-oneapi-dpcpp-cpp intel-oneapi-dpcpp-ct 2>&1 | tail -3
 
     # ----------------------------------------------------------
     # Step E: Set build environment variables
@@ -431,8 +544,19 @@ ONEAPI_REPO
         sed -i 's|^triton-xpu|# triton-xpu|' requirements.txt
         sed -i 's|^transformers|# transformers|' requirements.txt
 
+        # Fix ownership — sed and prior pip runs as root can leave root-owned files
+        chown -R "$REAL_USER:$REAL_USER" "$XPU_KERNELS_DIR"
+
         pip install -r requirements.txt 2>&1 | tail -1
-        pip install --no-build-isolation . 2>&1 | tail -3
+
+        echo ""
+        echo -e "${YELLOW}  ┌─────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${YELLOW}  │  Compiling vllm-xpu-kernels (oneDNN + SYCL kernels)...      │${NC}"
+        echo -e "${YELLOW}  │  This takes 30-70 minutes. The terminal may appear frozen    │${NC}"
+        echo -e "${YELLOW}  │  — DO NOT close this window or press Ctrl+C.                 │${NC}"
+        echo -e "${YELLOW}  └─────────────────────────────────────────────────────────────┘${NC}"
+        echo ""
+        pip install --no-build-isolation . 2>&1 | tail -5
 
         if pip show vllm-xpu-kernels &>/dev/null; then
             echo -e "${GREEN}  vllm-xpu-kernels built successfully.${NC}"
@@ -616,6 +740,10 @@ VLLM_ENV
         echo "  Download models later with:"
         echo "    ~/OpenClaw-on-MSI-Claw-8/scripts/download_model_fast.sh <repo_id>"
     fi
+
+    # Clean up pip temp directory
+    rm -rf "$TMPDIR"
+    unset TMPDIR
 
 else
     PULLED_MODEL="skipped"

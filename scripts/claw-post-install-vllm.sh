@@ -589,7 +589,7 @@ ONEAPI_REPO
             pip install --no-build-isolation -v . 2>&1 | tee $XPU_BUILD_LOG
             echo \${PIPESTATUS[0]} > $XPU_EXIT_FILE
         " | while IFS= read -r line; do
-            if [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\] ]]; then
+            if [[ "$line" =~ \[([0-9]+)/([0-9]+)\] ]]; then
                 printf "\r  Compiling: [%s/%s] files..." "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
             fi
         done

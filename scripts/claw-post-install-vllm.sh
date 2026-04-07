@@ -489,7 +489,7 @@ ONEAPI_REPO
     else
         echo ""
         echo "  Building vLLM with MAX_JOBS=$MAX_JOBS (this will take a while)..."
-        echo "  On 16GB RAM this can take 30-60 minutes. Do not interrupt."
+        echo "  With MAX_JOBS=$MAX_JOBS this can take $([ "$MAX_JOBS" -le 3 ] && echo '90-120' || echo '45-70') minutes. Do not interrupt."
         echo ""
         cd "$VLLM_DIR"
 
@@ -550,13 +550,25 @@ ONEAPI_REPO
         pip install -r requirements.txt 2>&1 | tail -1
 
         echo ""
+        if [ "$MAX_JOBS" -le 3 ]; then
+            BUILD_EST="90-120 minutes (3 workers / 16GB)"
+        else
+            BUILD_EST="45-70 minutes ($MAX_JOBS workers / ${TOTAL_RAM_GB}GB)"
+        fi
         echo -e "${YELLOW}  ┌─────────────────────────────────────────────────────────────┐${NC}"
         echo -e "${YELLOW}  │  Compiling vllm-xpu-kernels (oneDNN + SYCL kernels)...      │${NC}"
-        echo -e "${YELLOW}  │  This takes 30-70 minutes. The terminal may appear frozen    │${NC}"
-        echo -e "${YELLOW}  │  — DO NOT close this window or press Ctrl+C.                 │${NC}"
+        echo -e "${YELLOW}  │  The terminal may appear frozen — this is normal.            │${NC}"
+        echo -e "${YELLOW}  │  DO NOT close this window or press Ctrl+C.                   │${NC}"
         echo -e "${YELLOW}  └─────────────────────────────────────────────────────────────┘${NC}"
+        echo -e "${YELLOW}  Estimated time: ${BUILD_EST}${NC}"
         echo ""
-        pip install --no-build-isolation . 2>&1 | tail -5
+        # Show compile progress — count [N/total] lines from ninja output
+        pip install --no-build-isolation . 2>&1 | while IFS= read -r line; do
+            if [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\] ]]; then
+                printf "\r  Compiling: [%s/%s] files..." "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+            fi
+        done
+        echo ""  # newline after progress
 
         if pip show vllm-xpu-kernels &>/dev/null; then
             echo -e "${GREEN}  vllm-xpu-kernels built successfully.${NC}"

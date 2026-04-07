@@ -434,6 +434,20 @@ ONEAPI_REPO
     echo "  Installing Intel DPC++ compiler + compatibility tool (this may take a while)..."
     dnf install -y intel-oneapi-dpcpp-cpp intel-oneapi-dpcpp-ct 2>&1 | tail -3
 
+    # ocloc is required for AOT (ahead-of-time) GPU compilation during the linking
+    # phase of xpu-kernels. Without it, the build compiles all 933 objects but fails
+    # at the final linking step with "gen compiler command failed".
+    echo "  Installing Intel ocloc (AOT GPU compiler)..."
+    dnf install -y intel-ocloc 2>&1 | tail -3
+
+    # llvm-foreach is shipped inside the oneAPI compiler but not on PATH by default.
+    # The SYCL AOT linker needs it; without it: "llvm-foreach: No such file or directory".
+    LLVM_FOREACH="/opt/intel/oneapi/compiler/2025.3/bin/compiler/llvm-foreach"
+    if [ -f "$LLVM_FOREACH" ] && [ ! -f /usr/local/bin/llvm-foreach ]; then
+        ln -sf "$LLVM_FOREACH" /usr/local/bin/llvm-foreach
+        echo "  Symlinked llvm-foreach to /usr/local/bin/"
+    fi
+
     # ----------------------------------------------------------
     # Step E: Set build environment variables
     # ----------------------------------------------------------

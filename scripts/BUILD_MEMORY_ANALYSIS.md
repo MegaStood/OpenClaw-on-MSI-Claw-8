@@ -68,8 +68,8 @@ Peak memory = min(GEMM_files, workers) x 7GB + max(0, workers - GEMM_files) x 5G
 
 | Workers | Device | oneDNN (654 obj) | GEMM (3 obj) | Attention (240 obj) | Link+Install | Total |
 |---------|--------|-------------------|--------------|---------------------|-------------|-------|
-| 2 | Meteor Lake 16GB | ~45 min | ~10 min | ~120 min | ~5 min | **~3 hours** |
-| 3 | Meteor Lake 16GB | ~30 min | ~7 min | ~60 min | ~5 min | **~2 hours** |
+| 2 | Meteor Lake 16GB | ~45 min | ~10 min | ~200 min | ~5 min | **~5 hours** (measured) |
+| 3 | Meteor Lake 16GB | ~30 min | ~7 min | ~80 min | ~5 min | **~2 hours** |
 | 6 | Lunar Lake 32GB | ~15 min | ~5 min | ~40 min | ~5 min | **~65 min** (estimated) |
 
 ## Key Takeaways
@@ -78,4 +78,26 @@ Peak memory = min(GEMM_files, workers) x 7GB + max(0, workers - GEMM_files) x 5G
 2. **240 attention kernel templates** are moderately heavy (~3–5 GB each) and dominate build time.
 3. **oneDNN (654 files)** is lightweight and fast — could benefit from more workers if parallelism were adjustable mid-build.
 4. With disk swap properly sized (>= RAM), even 3 workers on 16GB RAM builds successfully — swap peaks are brief during GEMM phase only.
-5. **2 workers on 16GB is safe but slow** — virtually no swap pressure, but 50% longer build time vs 3 workers.
+5. **2 workers on 16GB is safe but slow** — virtually no swap pressure, but 150% longer build time vs 3 workers.
+
+## Known Build Issue: AOT Linking Failure
+
+The build can compile all 933 objects successfully but **fail at the linking step** (925/933) with:
+```
+FAILED: [code=1] libgrouped_gemm_xe_default.so
+icpx: warning: ocloc tool could not be found [...]
+llvm-foreach: No such file or directory
+icpx: error: gen compiler command failed with exit code 1
+```
+
+**Root cause:** Two missing tools required for SYCL ahead-of-time (AOT) GPU compilation:
+1. `ocloc` — Intel offline compiler for GPU binaries (from `intel-ocloc` package)
+2. `llvm-foreach` — exists in oneAPI compiler tree but not on PATH
+
+**Fix:**
+```bash
+sudo dnf install -y intel-ocloc
+sudo ln -sf /opt/intel/oneapi/compiler/2025.3/bin/compiler/llvm-foreach /usr/local/bin/llvm-foreach
+```
+
+This has been added to the install script (Phase 6, Step D).

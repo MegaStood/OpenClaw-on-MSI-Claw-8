@@ -405,6 +405,10 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     mkdir -p "$TMPDIR"
     chown "$REAL_USER:$REAL_USER" "$TMPDIR"
 
+    # Clean corrupted pip temp directories from previous interrupted upgrades
+    # (causes "WARNING: Ignoring invalid distribution ~..." on every pip command)
+    find "$VLLM_VENV" -type d -name '~*' -exec rm -rf {} + 2>/dev/null || true
+
     pip install --upgrade pip setuptools wheel 2>&1 | tail -1
     echo "  Using Python: $(python --version) from $(which python)"
 

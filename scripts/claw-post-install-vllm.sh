@@ -544,10 +544,13 @@ ONEAPI_REPO
         sed -i 's|^triton-xpu|# triton-xpu|' requirements.txt
         sed -i 's|^transformers|# transformers|' requirements.txt
 
-        # Fix ownership — sed and prior pip runs as root can leave root-owned files
+        # Fix ownership — sed runs as root can leave root-owned files
         chown -R "$REAL_USER:$REAL_USER" "$XPU_KERNELS_DIR"
 
-        pip install -r requirements.txt 2>&1 | tail -1
+        # Run pip as REAL_USER to avoid root-owned build artifacts.
+        # The build/ directory is created during compilation — if owned by root,
+        # the final wheel packaging step fails with "Permission denied".
+        sudo -u "$REAL_USER" bash -c "source $VLLM_VENV/bin/activate && source /opt/intel/oneapi/setvars.sh --force 2>/dev/null && pip install -r requirements.txt 2>&1 | tail -1"
 
         echo ""
         if [ "$MAX_JOBS" -le 3 ]; then
@@ -562,18 +565,28 @@ ONEAPI_REPO
         echo -e "${YELLOW}  └─────────────────────────────────────────────────────────────┘${NC}"
         echo -e "${YELLOW}  Estimated time: ${BUILD_EST}${NC}"
         echo ""
-        # Show compile progress — count [N/total] lines from ninja output
-        pip install --no-build-isolation . 2>&1 | while IFS= read -r line; do
+        # Run as REAL_USER to avoid root-owned build artifacts.
+        # Use pipefail so pip's exit code propagates through the progress filter.
+        # Errors go to a log file so they're not lost by the progress filter.
+        XPU_BUILD_LOG="$REAL_HOME/.pip-tmp/xpu-kernels-build.log"
+        set -o pipefail
+        sudo -u "$REAL_USER" bash -c "source $VLLM_VENV/bin/activate && source /opt/intel/oneapi/setvars.sh --force 2>/dev/null && export MAX_JOBS=$MAX_JOBS && export TMPDIR=$REAL_HOME/.pip-tmp && cd $XPU_KERNELS_DIR && pip install --no-build-isolation . 2>&1 | tee $XPU_BUILD_LOG" | while IFS= read -r line; do
             if [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\] ]]; then
                 printf "\r  Compiling: [%s/%s] files..." "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
             fi
         done
+        XPU_BUILD_EXIT=$?
+        set +o pipefail
         echo ""  # newline after progress
 
-        if pip show vllm-xpu-kernels &>/dev/null; then
+        if [ "$XPU_BUILD_EXIT" -eq 0 ] && pip show vllm-xpu-kernels &>/dev/null; then
             echo -e "${GREEN}  vllm-xpu-kernels built successfully.${NC}"
+            rm -f "$XPU_BUILD_LOG"
         else
-            echo -e "${RED}  vllm-xpu-kernels build failed. Check errors above.${NC}"
+            echo -e "${RED}  vllm-xpu-kernels build failed. Last 20 lines of build log:${NC}"
+            tail -20 "$XPU_BUILD_LOG" 2>/dev/null | sed 's/^/    /'
+            echo ""
+            echo "  Full log: $XPU_BUILD_LOG"
         fi
     fi
 

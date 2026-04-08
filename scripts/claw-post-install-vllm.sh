@@ -604,6 +604,7 @@ ONEAPI_REPO
         sudo -u "$REAL_USER" bash -c "
             source $VLLM_VENV/bin/activate
             source /opt/intel/oneapi/setvars.sh --force 2>/dev/null
+            export SYCL_HOME=\$CMPLR_ROOT
             export MAX_JOBS=$MAX_JOBS
             export TMPDIR=$REAL_HOME/.pip-tmp
             cd $XPU_KERNELS_DIR

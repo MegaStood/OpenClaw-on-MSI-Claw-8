@@ -437,13 +437,16 @@ ONEAPI_REPO
     # ocloc is required for AOT (ahead-of-time) GPU compilation during the linking
     # phase of xpu-kernels. Without it, the build compiles all 933 objects but fails
     # at the final linking step with "gen compiler command failed".
-    echo "  Installing Intel ocloc (AOT GPU compiler)..."
-    dnf install -y intel-ocloc 2>&1 | tail -3
+    # intel-igc-core + intel-igc-opencl provide libigc.so.2 — the Intel Graphics
+    # Compiler backend that ocloc calls to lower SPIR-V to native GPU code.
+    # Without IGC, ocloc exits with "Loading of IGC library has failed" (error -6).
+    echo "  Installing Intel ocloc + IGC (AOT GPU compiler)..."
+    dnf install -y intel-ocloc intel-igc-core intel-igc-opencl 2>&1 | tail -3
 
     # llvm-foreach is shipped inside the oneAPI compiler but not on PATH by default.
     # The SYCL AOT linker needs it; without it: "llvm-foreach: No such file or directory".
-    LLVM_FOREACH="/opt/intel/oneapi/compiler/2025.3/bin/compiler/llvm-foreach"
-    if [ -f "$LLVM_FOREACH" ] && [ ! -f /usr/local/bin/llvm-foreach ]; then
+    LLVM_FOREACH=$(find /opt/intel/oneapi/compiler/ -name "llvm-foreach" -type f 2>/dev/null | head -1)
+    if [ -n "$LLVM_FOREACH" ] && [ ! -f /usr/local/bin/llvm-foreach ]; then
         ln -sf "$LLVM_FOREACH" /usr/local/bin/llvm-foreach
         echo "  Symlinked llvm-foreach to /usr/local/bin/"
     fi

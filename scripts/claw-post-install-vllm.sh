@@ -437,11 +437,12 @@ ONEAPI_REPO
     # ocloc is required for AOT (ahead-of-time) GPU compilation during the linking
     # phase of xpu-kernels. Without it, the build compiles all 933 objects but fails
     # at the final linking step with "gen compiler command failed".
-    # intel-igc-core + intel-igc-opencl provide libigc.so.2 — the Intel Graphics
+    # intel-igc + intel-igc-libs provide libigc.so.2 — the Intel Graphics
     # Compiler backend that ocloc calls to lower SPIR-V to native GPU code.
     # Without IGC, ocloc exits with "Loading of IGC library has failed" (error -6).
+    # (Fedora/Nobara packages; Debian/Ubuntu equivalents: intel-igc-core, intel-igc-opencl)
     echo "  Installing Intel ocloc + IGC (AOT GPU compiler)..."
-    dnf install -y intel-ocloc intel-igc-core intel-igc-opencl 2>&1 | tail -3
+    dnf install -y intel-ocloc intel-igc intel-igc-libs 2>&1 | tail -3
 
     # llvm-foreach is shipped inside the oneAPI compiler but not on PATH by default.
     # The SYCL AOT linker needs it; without it: "llvm-foreach: No such file or directory".
@@ -632,12 +633,16 @@ ONEAPI_REPO
     fi
 
     # ----------------------------------------------------------
-    # Step J: Fix triton
+    # Step J: Fix triton — replace vanilla triton with triton-xpu
     # ----------------------------------------------------------
-    echo "  Fixing triton installation..."
-    pip uninstall triton triton-xpu -y 2>/dev/null || true
-    pip install triton-xpu==3.6.0 --extra-index-url=https://download.pytorch.org/whl/test/xpu 2>&1 | tail -1
-    echo -e "${GREEN}  triton-xpu installed.${NC}"
+    if pip show triton-xpu &>/dev/null; then
+        echo -e "${GREEN}  triton-xpu already installed. Skipping.${NC}"
+    else
+        echo "  Replacing triton with triton-xpu..."
+        pip uninstall triton -y 2>/dev/null || true
+        pip install triton-xpu==3.6.0 --extra-index-url=https://download.pytorch.org/whl/test/xpu 2>&1 | tail -1
+        echo -e "${GREEN}  triton-xpu installed.${NC}"
+    fi
 
     # ----------------------------------------------------------
     # Step K: Configure production environment in ~/.bashrc

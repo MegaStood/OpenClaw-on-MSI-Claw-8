@@ -686,20 +686,23 @@ VLLM_ENV
         echo "  │     Intel's open MoE model, optimized for Arc XPU.             │"
         echo "  │     Best performance/quality on 32GB Claw 8 AI+.               │"
         echo "  │                                                                 │"
-        echo "  │  2) Qwen3.5-4B                           [~3GB]  LIGHTWEIGHT   │"
-        echo "  │     Dense 4B fallback. Fast, low memory.                       │"
+        echo "  │  2) Gemma 4 E4B-it FP8                  [~13GB]  BEST QUALITY  │"
+        echo "  │     Google's Gemma 4 (FP8). Top quality per size.              │"
+        echo "  │                                                                 │"
+        echo "  │  3) Qwen3.5-4B INT4 (AutoRound)          [~5GB]  LIGHTWEIGHT   │"
+        echo "  │     Intel-quantized 4B. Fast, low memory.                      │"
         echo "  │                                                                 │"
         echo "  ├─────────────────────────────────────────────────────────────────┤"
         echo "  │  CLOUD OPTIONS (configure after install)                        │"
         echo "  ├─────────────────────────────────────────────────────────────────┤"
         echo "  │                                                                 │"
-        echo "  │  3) Anthropic API     [requires API key from console.anthropic] │"
-        echo "  │  4) Remote vLLM server (e.g., DGX Spark on local network)      │"
-        echo "  │  5) Skip — I'll download models manually later                 │"
+        echo "  │  4) Anthropic API     [requires API key from console.anthropic] │"
+        echo "  │  5) Remote vLLM server (e.g., DGX Spark on local network)      │"
+        echo "  │  6) Skip — I'll download models manually later                 │"
         echo "  │                                                                 │"
         echo "  └─────────────────────────────────────────────────────────────────┘"
         echo ""
-        read -p "  Choose [1-5]: " MODEL_CHOICE
+        read -p "  Choose [1-6]: " MODEL_CHOICE
 
         case $MODEL_CHOICE in
             1)
@@ -709,26 +712,32 @@ VLLM_ENV
                 PULLED_MODEL="local"
                 ;;
             2)
-                MODEL_DISPLAY="Qwen3.5-4B"
-                echo "  Downloading Qwen3.5-4B (~3GB)..."
-                sudo -u "$REAL_USER" bash "$DOWNLOAD_SCRIPT" Qwen/Qwen3.5-4B
+                MODEL_DISPLAY="Gemma 4 E4B-it FP8"
+                echo "  Downloading Gemma 4 E4B-it FP8 (~13GB, this may take a while)..."
+                sudo -u "$REAL_USER" bash "$DOWNLOAD_SCRIPT" protoLabsAI/gemma-4-E4B-it-FP8
                 PULLED_MODEL="local"
                 ;;
             3)
+                MODEL_DISPLAY="Qwen3.5-4B (INT4)"
+                echo "  Downloading Qwen3.5-4B INT4 (~5GB)..."
+                sudo -u "$REAL_USER" bash "$DOWNLOAD_SCRIPT" Intel/Qwen3.5-4B-int4-AutoRound
+                PULLED_MODEL="local"
+                ;;
+            4)
                 MODEL_DISPLAY="Anthropic API"
                 PULLED_MODEL="anthropic-api"
                 echo ""
                 echo -e "${GREEN}  Anthropic API selected as cloud backend.${NC}"
                 echo "  Get your API key from: https://console.anthropic.com"
                 ;;
-            4)
+            5)
                 MODEL_DISPLAY="Remote vLLM server"
                 PULLED_MODEL="remote-server"
                 echo ""
                 echo -e "${GREEN}  Remote vLLM server selected.${NC}"
                 echo "  Point your client to: http://YOUR_SERVER_IP:8000/v1"
                 ;;
-            5|*)
+            6|*)
                 MODEL_DISPLAY="none"
                 PULLED_MODEL="none"
                 ;;
@@ -741,54 +750,64 @@ VLLM_ENV
         echo "  │  LOCAL MODELS (safetensors, served via vLLM XPU)               │"
         echo "  ├─────────────────────────────────────────────────────────────────┤"
         echo "  │                                                                 │"
-        echo "  │  1) Qwen3.5-4B        [~3GB]  RECOMMENDED for 16GB            │"
-        echo "  │     Dense 4B. Best safe choice for 16GB RAM.                   │"
+        echo "  │  1) Gemma 4 E4B-it FP8 [~13GB]  BEST QUALITY (tight on 16GB) │"
+        echo "  │     Google's Gemma 4 (FP8). Top quality, needs weight offload. │"
+        echo "  │     May OOM on 16GB — try --gpu-memory-utilization 0.4         │"
         echo "  │                                                                 │"
-        echo "  │  2) Qwen3.5-1.7B      [~1.5GB]  ULTRA-LIGHTWEIGHT             │"
+        echo "  │  2) Qwen3.5-4B INT4 (AutoRound) [~5GB]  RECOMMENDED for 16GB  │"
+        echo "  │     Intel-quantized 4B. Best safe choice for 16GB RAM.         │"
+        echo "  │                                                                 │"
+        echo "  │  3) Qwen3.5-1.7B         [~1.5GB]  ULTRA-LIGHTWEIGHT          │"
         echo "  │     Dense 1.7B. Minimal memory footprint.                      │"
         echo "  │                                                                 │"
         echo "  ├─────────────────────────────────────────────────────────────────┤"
         echo "  │  CLOUD OPTIONS (configure after install)                        │"
         echo "  ├─────────────────────────────────────────────────────────────────┤"
         echo "  │                                                                 │"
-        echo "  │  3) Anthropic API     [requires API key from console.anthropic] │"
-        echo "  │  4) Remote vLLM server (e.g., DGX Spark on local network)      │"
-        echo "  │  5) Skip — I'll download models manually later                 │"
+        echo "  │  4) Anthropic API     [requires API key from console.anthropic] │"
+        echo "  │  5) Remote vLLM server (e.g., DGX Spark on local network)      │"
+        echo "  │  6) Skip — I'll download models manually later                 │"
         echo "  │                                                                 │"
         echo "  └─────────────────────────────────────────────────────────────────┘"
         echo ""
-        echo -e "${YELLOW}  Note: 16GB RAM limits you to 4B models or smaller with vLLM.${NC}"
+        echo -e "${YELLOW}  Note: 16GB RAM limits you to ~4B models safely. Gemma 4 E4B (13GB) needs weight offloading.${NC}"
         echo ""
-        read -p "  Choose [1-5]: " MODEL_CHOICE
+        read -p "  Choose [1-6]: " MODEL_CHOICE
 
         case $MODEL_CHOICE in
             1)
-                MODEL_DISPLAY="Qwen3.5-4B"
-                echo "  Downloading Qwen3.5-4B (~3GB)..."
-                sudo -u "$REAL_USER" bash "$DOWNLOAD_SCRIPT" Qwen/Qwen3.5-4B
+                MODEL_DISPLAY="Gemma 4 E4B-it FP8"
+                echo "  Downloading Gemma 4 E4B-it FP8 (~13GB, this may take a while)..."
+                sudo -u "$REAL_USER" bash "$DOWNLOAD_SCRIPT" protoLabsAI/gemma-4-E4B-it-FP8
                 PULLED_MODEL="local"
                 ;;
             2)
+                MODEL_DISPLAY="Qwen3.5-4B (INT4)"
+                echo "  Downloading Qwen3.5-4B INT4 (~5GB)..."
+                sudo -u "$REAL_USER" bash "$DOWNLOAD_SCRIPT" Intel/Qwen3.5-4B-int4-AutoRound
+                PULLED_MODEL="local"
+                ;;
+            3)
                 MODEL_DISPLAY="Qwen3.5-1.7B"
                 echo "  Downloading Qwen3.5-1.7B (~1.5GB)..."
                 sudo -u "$REAL_USER" bash "$DOWNLOAD_SCRIPT" Qwen/Qwen3.5-1.7B
                 PULLED_MODEL="local"
                 ;;
-            3)
+            4)
                 MODEL_DISPLAY="Anthropic API"
                 PULLED_MODEL="anthropic-api"
                 echo ""
                 echo -e "${GREEN}  Anthropic API selected as cloud backend.${NC}"
                 echo "  Get your API key from: https://console.anthropic.com"
                 ;;
-            4)
+            5)
                 MODEL_DISPLAY="Remote vLLM server"
                 PULLED_MODEL="remote-server"
                 echo ""
                 echo -e "${GREEN}  Remote vLLM server selected.${NC}"
                 echo "  Point your client to: http://YOUR_SERVER_IP:8000/v1"
                 ;;
-            5|*)
+            6|*)
                 MODEL_DISPLAY="none"
                 PULLED_MODEL="none"
                 ;;

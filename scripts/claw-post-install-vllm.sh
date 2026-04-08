@@ -538,10 +538,19 @@ ONEAPI_REPO
     # Step H: Install additional Python dependencies
     # ----------------------------------------------------------
     echo "  Installing additional Python dependencies..."
+    # Use --no-deps for transformers to prevent it from pulling in a CUDA torch
+    # that overwrites our torch+xpu build (2.10.0+xpu → 2.11.0+cu130).
     pip install accelerate hf_transfer 'modelscope!=1.15.0' 2>&1 | tail -1
     pip install librosa soundfile decord 2>&1 | tail -1
-    pip install git+https://github.com/huggingface/transformers.git 2>&1 | tail -1
+    pip install --no-deps git+https://github.com/huggingface/transformers.git 2>&1 | tail -1
     pip install ijson bigdl-core==2.4.0b2 2>&1 | tail -1
+
+    # Verify torch+xpu wasn't overwritten by a CUDA build
+    TORCH_XPU_OK=$(python -c "import torch; print('yes' if torch.xpu._is_compiled() else 'no')" 2>/dev/null || echo "no")
+    if [ "$TORCH_XPU_OK" != "yes" ]; then
+        echo -e "${YELLOW}  torch+xpu was overwritten — reinstalling from XPU index...${NC}"
+        pip install torch==2.10.0+xpu --extra-index-url=https://download.pytorch.org/whl/xpu 2>&1 | tail -1
+    fi
     echo -e "${GREEN}  Additional dependencies installed.${NC}"
 
     # ----------------------------------------------------------

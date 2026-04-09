@@ -60,7 +60,7 @@ Both expose the same OpenAI-compatible API (`/v1/chat/completions`), so OpenClaw
 | 3 | Mask InputPlumber, install HHD for controller | No (skips if installed) |
 | 4 | WiFi sleep fix (D3Cold + module reload) | No |
 | 5 | Disable hibernate (breaks Quick Resume) | No |
-| 6 | Build llama.cpp with Vulkan, install model launcher, download GGUF model | Yes (model choice) |
+| 6 | Build llama.cpp with Vulkan + SYCL, install model launcher, download GGUF model | Yes (model choice) |
 | 7 | Summary and reboot prompt | Yes |
 
 ## Model Launcher
@@ -143,6 +143,40 @@ Key takeaways:
 - Vulkan gives **~40% faster TG** over CPU
 - Thread count dramatically affects PP (3x difference) but not TG
 - TG is memory-bandwidth bound (136.5 GB/s LPDDR5x); PP is compute-bound
+
+### Vulkan vs SYCL Backend (Meteor Lake / Claw A1M)
+
+On the Claw A1M (Meteor Lake, 16GB), llama.cpp supports both Vulkan and SYCL backends.
+SYCL uses Intel's oneMKL library for optimized matrix multiplication — it scales significantly
+better at long contexts where Vulkan degrades.
+
+**Gemma 4 E4B Q4_K_M** (7.5B params, 4.62 GiB) on MSI Claw A1M:
+
+| Backend | pp512 | pp1024 | pp2048 | pp4096 | pp8192 | pp16384 | pp32768 | tg128 |
+|---|---|---|---|---|---|---|---|---|
+| **SYCL** | 309 | 314 | 316 | 310 | 304 | 290 | 258 | 15.1 |
+| **Vulkan** | 318 | 299 | 264 | 265 | 246 | 169 | 172 | 14.2 |
+
+Key findings:
+- **SYCL loses only 17%** from pp512→pp32768 vs **46% for Vulkan** (1.5× faster at 32K)
+- Vulkan is slightly faster at short context (pp512) but SYCL wins past pp1024
+- Token generation is comparable: SYCL 15.1 vs Vulkan 14.2 tok/s
+- SYCL does NOT require XMX — oneMKL dispatches to the best available path (DP4a on Meteor Lake)
+
+**SYCL extended token generation** (same model):
+
+| tg128 | tg256 | tg512 | tg1024 | tg2048 |
+|---|---|---|---|---|
+| 15.1 | 15.0 | 14.7 | 14.6 | 14.0 |
+
+TG degrades only 7% from 128→2048 generated tokens — very stable.
+
+**Why not OpenVINO?** The llama.cpp OpenVINO backend (merged March 2026) is broken —
+it doesn't support K-quant formats (Q4_K_M, Q4_K_XL, Q5_K_M). Both CPU and GPU modes
+fail with `"failed to decode prompt batch, res = -3"`. The CPY operation is also not
+implemented, breaking flash attention. Use SYCL instead.
+
+To use the SYCL backend: `~/run-model.sh --sycl`
 
 ### Performance Tuning (run-model.sh defaults)
 
@@ -399,6 +433,22 @@ cd ~/llama.cpp
 cmake -B build -DGGML_VULKAN=ON
 cmake --build build --config Release -j$(nproc)
 
+# SYCL backend (optional — better long-context scaling via oneMKL)
+# Add Intel oneAPI repo
+sudo tee /etc/yum.repos.d/oneAPI.repo << 'EOF'
+[oneAPI]
+name=Intel oneAPI
+baseurl=https://yum.repos.intel.com/oneapi
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+EOF
+sudo dnf install -y intel-oneapi-mkl-devel
+source /opt/intel/oneapi/setvars.sh
+cmake -B build-sycl -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release
+cmake --build build-sycl --config Release -j$(nproc)
+
 # Set up model directory and launcher
 sudo mkdir -p /shared/models/gguf
 sudo chown $USER:$USER /shared/models/gguf
@@ -409,7 +459,8 @@ chmod +x ~/run-model.sh
 scripts/download_model_fast.sh unsloth/Qwen3.5-9B-UD-GGUF --gguf Q4_K_M
 
 # Launch it
-~/run-model.sh
+~/run-model.sh              # Vulkan (default)
+~/run-model.sh --sycl       # SYCL (better long context)
 ```
 
 **Common build issues on Nobara:**
@@ -418,6 +469,8 @@ scripts/download_model_fast.sh unsloth/Qwen3.5-9B-UD-GGUF --gguf Q4_K_M
 - `warning: no usable GPU found` → Build didn't include Vulkan. Delete `build/` dir and rebuild with `-DGGML_VULKAN=ON`
 - Only 2 threads used by default → Always pass `-t 8` for Lunar Lake (4P + 4E cores)
 - KV cache eating 8GB+ RAM → Always set explicit `-c` (e.g., `-c 8192`), don't let it default to training context
+- `Could not find MKL` (SYCL build) → Install `intel-oneapi-mkl-devel` and re-source `setvars.sh`
+- `ext_intel_free_memory is not supported` warning → Set `ZES_ENABLE_SYSMAN=1` (run-model.sh handles this)
 
 ## Resources
 

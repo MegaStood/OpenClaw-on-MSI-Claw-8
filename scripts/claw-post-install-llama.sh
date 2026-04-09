@@ -247,7 +247,8 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     #   "Could NOT find Vulkan (missing: glslc)"
     # On Nobara 43+, the package is 'glslc' (not 'shaderc').
     # nvtop provides GPU monitoring — intel_gpu_top does NOT work on the xe driver.
-    dnf install -y cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel nvtop python3-pip 2>&1 | tail -1
+    # tbb-devel provides TBB cmake config needed by the OpenVINO backend build.
+    dnf install -y cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel nvtop python3-pip tbb-devel 2>&1 | tail -1
 
     # Install glslc: try 'glslc' first (Nobara 43+), fall back to 'shaderc' (older Fedora)
     if ! command -v glslc &>/dev/null; then
@@ -303,6 +304,53 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
     fi
 
     # ----------------------------------------------------------
+    # Step B2: Build llama.cpp with OpenVINO (into build-ov/)
+    # ----------------------------------------------------------
+    # OpenVINO backend uses graph-level JIT compilation and kernel fusion,
+    # giving significantly better prefill performance on Meteor Lake (no
+    # cooperative matrix → Vulkan prefill is ~14x slower than OpenVINO).
+    # Both builds coexist: build/ (Vulkan) and build-ov/ (OpenVINO).
+    LLAMA_OV_SERVER="$LLAMA_DIR/build-ov/bin/llama-server"
+
+    if [ -f "$LLAMA_OV_SERVER" ]; then
+        echo -e "${GREEN}  llama.cpp OpenVINO backend already built. Skipping.${NC}"
+        echo "  To rebuild: cd ~/llama.cpp && rm -rf build-ov && cmake -B build-ov -DGGML_OPENVINO=ON && cmake --build build-ov --parallel"
+    else
+        echo "  Building llama.cpp with OpenVINO backend..."
+        echo "  (This gives much faster prefill on Meteor Lake iGPU)"
+
+        # Install OpenVINO runtime in a venv
+        OV_VENV="$REAL_HOME/openvino-venv"
+        sudo -u "$REAL_USER" bash -c "
+            python3 -m venv $OV_VENV
+            source $OV_VENV/bin/activate
+            pip install -q openvino==2026.1.0
+
+            cd $LLAMA_DIR
+
+            # Set OpenVINO_DIR so CMake can find it
+            export OpenVINO_DIR=\$(python3 -c 'import openvino; import os; print(os.path.dirname(openvino.__file__))')
+
+            # Fix: pip openvino package doesn't bundle TBB cmake config.
+            # Replace the hardcoded include with find_package to use system tbb-devel.
+            sed -i 's|include(\"\${OpenVINO_DIR}/../3rdparty/tbb/lib/cmake/TBB/TBBConfig.cmake\")|find_package(TBB REQUIRED)|' ggml/src/ggml-openvino/CMakeLists.txt
+
+            cmake -B build-ov -DGGML_OPENVINO=ON
+            cmake --build build-ov --parallel
+        "
+
+        if [ -f "$LLAMA_OV_SERVER" ]; then
+            echo -e "${GREEN}  llama.cpp OpenVINO backend built successfully (build-ov/).${NC}"
+        else
+            echo -e "${YELLOW}  OpenVINO build failed. Vulkan backend is still available.${NC}"
+            echo "  You can retry manually:"
+            echo "    source ~/openvino-venv/bin/activate"
+            echo "    export OpenVINO_DIR=\$(python3 -c 'import openvino; import os; print(os.path.dirname(openvino.__file__))')"
+            echo "    cd ~/llama.cpp && rm -rf build-ov && cmake -B build-ov -DGGML_OPENVINO=ON && cmake --build build-ov --parallel"
+        fi
+    fi
+
+    # ----------------------------------------------------------
     # Step C: Install run-model.sh launcher
     # ----------------------------------------------------------
     echo "  Installing model launcher script..."
@@ -312,9 +360,53 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
 # run-model.sh — auto-discover and launch GGUF models via llama.cpp
 # - Models >= 9B: reasoning ON, 32k context (agentic/tool-calling ready)
 # - Models < 9B:  reasoning OFF, 8k context
+# - Supports two backends: Vulkan (default) and OpenVINO (better prefill on Meteor Lake)
+#
+# Usage:
+#   ~/run-model.sh                    # Vulkan backend (default)
+#   ~/run-model.sh --openvino         # OpenVINO backend
+#   ~/run-model.sh --ov               # OpenVINO backend (short form)
+#   ~/run-model.sh --bench            # Run llama-bench instead of server
 
 MODEL_DIR="/shared/models/gguf"
-LLAMA_SERVER="$HOME/llama.cpp/build/bin/llama-server"
+
+# Parse flags
+BACKEND="vulkan"
+BENCH_MODE=false
+POSITIONAL=()
+for arg in "$@"; do
+    case $arg in
+        --openvino|--ov)  BACKEND="openvino" ;;
+        --vulkan|--vk)    BACKEND="vulkan" ;;
+        --bench)          BENCH_MODE=true ;;
+        *)                POSITIONAL+=("$arg") ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
+# Select backend binary directory
+if [ "$BACKEND" = "openvino" ]; then
+    BUILD_DIR="$HOME/llama.cpp/build-ov"
+    BACKEND_LABEL="OpenVINO"
+    # OpenVINO needs the venv activated for shared libraries
+    if [ -f "$HOME/openvino-venv/bin/activate" ]; then
+        source "$HOME/openvino-venv/bin/activate"
+    fi
+    export GGML_OPENVINO_DEVICE=GPU
+    export GGML_OPENVINO_STATEFUL_EXECUTION=1
+else
+    BUILD_DIR="$HOME/llama.cpp/build"
+    BACKEND_LABEL="Vulkan"
+fi
+
+LLAMA_SERVER="$BUILD_DIR/bin/llama-server"
+LLAMA_BENCH="$BUILD_DIR/bin/llama-bench"
+
+if [ ! -f "$LLAMA_SERVER" ]; then
+    echo "Error: $BACKEND_LABEL backend not found at $BUILD_DIR"
+    echo "Build it first, or use --vulkan / --openvino to switch."
+    exit 1
+fi
 
 # Auto-detect thread count: physical cores (hyperthreads hurt matrix math throughput)
 THREADS=$(lscpu | awk '/^Core\(s\) per socket/ {print $NF}')
@@ -390,11 +482,23 @@ else
     MODE_LABEL="reasoning OFF, context 8k"
 fi
 
+# Bench mode: run llama-bench and exit
+if [ "$BENCH_MODE" = true ]; then
+    echo ""
+    echo "Benchmarking: $MODEL_NAME ($BACKEND_LABEL backend)"
+    echo "───────────────────────────────────────────────────────────────────────────────"
+    BENCH_ARGS="-m $MODEL -p 512,1024,2048,4096 -n 128 -ngl 99"
+    [ "$BACKEND" = "openvino" ] && BENCH_ARGS="$BENCH_ARGS -fa 1"
+    $LLAMA_BENCH $BENCH_ARGS
+    exit 0
+fi
+
 # Kill existing server
 pkill -f llama-server 2>/dev/null && sleep 1
 
 echo ""
 echo "Loading: $MODEL_NAME"
+echo "Backend: $BACKEND_LABEL"
 echo "Params:  ~${PARAMS}B"
 echo "Mode:    $MODE_LABEL"
 echo "Threads: $THREADS"
@@ -403,16 +507,20 @@ echo "Web UI:  http://127.0.0.1:8080"
 echo "───────────────────────────────────────────────────────────────────────────────"
 echo ""
 
-# -ngl 99: offload all layers to GPU (Vulkan). Without this, runs CPU-only
+# -ngl 99: offload all layers to GPU. Without this, runs CPU-only
 # -t N:    auto-detected physical core count for best throughput
 # -c:      explicit context size. Without this, defaults to model's training context
 #          which can eat all RAM for KV cache alone
+OV_ARGS=""
+[ "$BACKEND" = "openvino" ] && OV_ARGS="-fa 1"
+
 $LLAMA_SERVER \
     -m "$MODEL" \
     -ngl 99 \
     -t $THREADS \
     -c $CONTEXT \
-    $REASONING_ARGS
+    $REASONING_ARGS \
+    $OV_ARGS
 RUNMODEL
     chown "$REAL_USER:$REAL_USER" "$REAL_HOME/run-model.sh"
     chmod +x "$REAL_HOME/run-model.sh"
@@ -583,10 +691,13 @@ RUNMODEL
     echo "  │  Quick Start                                                    │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
-    echo "  │  Launch a model:    ~/run-model.sh                              │"
+    echo "  │  Launch (Vulkan):   ~/run-model.sh                              │"
+    echo "  │  Launch (OpenVINO): ~/run-model.sh --ov                         │"
+    echo "  │  Benchmark:         ~/run-model.sh --bench                      │"
+    echo "  │  Benchmark (OV):    ~/run-model.sh --ov --bench                 │"
+    echo "  │                                                                 │"
     echo "  │  Web UI:            http://127.0.0.1:8080                       │"
     echo "  │  API endpoint:      http://127.0.0.1:8080/v1/chat/completions   │"
-    echo "  │  Benchmark:         ~/llama.cpp/build/bin/llama-bench -m <model> │"
     echo "  │                                                                 │"
     echo "  │  Add models:        Drop .gguf files into /shared/models/gguf/  │"
     echo "  │  Download models:   huggingface-cli download <repo> <file>      │"
@@ -594,17 +705,24 @@ RUNMODEL
     echo "  │                                                                 │"
     echo "  │  OpenClaw:          Point to http://127.0.0.1:8080              │"
     echo "  │                     (same OpenAI-compatible API as Ollama)      │"
+    echo "  │                                                                 │"
+    echo "  │  Tip: On Meteor Lake, use --ov for faster prefill (~2x)         │"
     echo "  └─────────────────────────────────────────────────────────────────┘"
 else
     PULLED_MODEL="skipped"
     echo "  Skipping AI tools. You can install later:"
     echo ""
-    echo "  # Install build tools and build llama.cpp"
-    echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel glslc"
+    echo "  # Install build tools and build llama.cpp (Vulkan + OpenVINO)"
+    echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel glslc tbb-devel"
     echo "  git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp"
     echo "  cd ~/llama.cpp"
-    echo "  cmake -B build -DGGML_VULKAN=ON"
-    echo "  cmake --build build --config Release -j\$(nproc)"
+    echo "  cmake -B build -DGGML_VULKAN=ON && cmake --build build -j\$(nproc)"
+    echo "  # OpenVINO backend (optional, better prefill on Meteor Lake):"
+    echo "  python3 -m venv ~/openvino-venv && source ~/openvino-venv/bin/activate"
+    echo "  pip install openvino==2026.1.0"
+    echo "  export OpenVINO_DIR=\$(python3 -c 'import openvino; import os; print(os.path.dirname(openvino.__file__))')"
+    echo "  sed -i 's|include.*TBBConfig.*|find_package(TBB REQUIRED)|' ggml/src/ggml-openvino/CMakeLists.txt"
+    echo "  cmake -B build-ov -DGGML_OPENVINO=ON && cmake --build build-ov -j\$(nproc)"
     echo ""
     echo "  # Download a model"
     echo "  scripts/download_model_fast.sh unsloth/Qwen3.5-35B-A3B-GGUF --gguf Q4_K_M"
@@ -629,8 +747,13 @@ echo "  [✓] Handheld Daemon (HHD) installed"
 echo "  [✓] WiFi sleep fix installed (D3Cold + module reload)"
 echo "  [✓] Hibernate disabled"
 if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
-    echo "  [✓] llama.cpp built with Vulkan GPU acceleration"
-    echo "  [✓] Model launcher installed: ~/run-model.sh (threads: $PHYS_CORES)"
+    echo "  [✓] llama.cpp built with Vulkan GPU acceleration (build/)"
+    if [ -f "$REAL_HOME/llama.cpp/build-ov/bin/llama-server" ]; then
+        echo "  [✓] llama.cpp built with OpenVINO backend (build-ov/)"
+    else
+        echo "  [~] llama.cpp OpenVINO backend: build failed (Vulkan still works)"
+    fi
+    echo "  [✓] Model launcher installed: ~/run-model.sh"
     case $PULLED_MODEL in
         local)
             echo "  [✓] Downloaded $MODEL_DISPLAY to /shared/models/gguf/"
@@ -646,7 +769,8 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
             ;;
     esac
     echo ""
-    echo "  To start:  ~/run-model.sh"
+    echo "  To start:  ~/run-model.sh              (Vulkan)"
+    echo "             ~/run-model.sh --ov         (OpenVINO — faster prefill)"
     echo "  Web UI:    http://127.0.0.1:8080"
     echo "  API:       http://127.0.0.1:8080/v1/chat/completions"
 fi

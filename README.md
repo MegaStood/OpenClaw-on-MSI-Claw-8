@@ -150,26 +150,19 @@ On the Claw A1M (Meteor Lake, 16GB), llama.cpp supports both Vulkan and SYCL bac
 SYCL uses Intel's oneMKL library for optimized matrix multiplication — it scales significantly
 better at long contexts where Vulkan degrades.
 
-**Gemma 4 E4B Q4_K_M** (7.5B params, 4.62 GiB) on MSI Claw A1M:
+**Gemma 4 E4B Q4_K_M** (7.5B params, 4.62 GiB) on MSI Claw A1M (5 runs averaged):
 
-| Backend | pp512 | pp1024 | pp2048 | pp4096 | pp8192 | pp16384 | pp32768 | tg128 |
-|---|---|---|---|---|---|---|---|---|
-| **SYCL** | 309 | 314 | 316 | 310 | 304 | 290 | 258 | 15.1 |
-| **Vulkan** | 318 | 299 | 264 | 265 | 246 | 169 | 172 | 14.2 |
+| Backend | pp512 | pp1024 | pp2048 | pp4096 | pp8192 | pp16384 | pp32768 | tg128 | tg256 | tg512 | tg1024 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **SYCL** | 311 | 317 | 318 | 314 | 305 | 290 | 257 | 15.0 | 15.6 | 15.5 | 15.2 |
+| **Vulkan** | 292 | 278 | 281 | 286 | 267 | 237 | 188 | 14.6 | 14.6 | 14.4 | 14.1 |
 
 Key findings:
-- **SYCL loses only 17%** from pp512→pp32768 vs **46% for Vulkan** (1.5× faster at 32K)
-- Vulkan is slightly faster at short context (pp512) but SYCL wins past pp1024
-- Token generation is comparable: SYCL 15.1 vs Vulkan 14.2 tok/s
+- **SYCL loses only 17%** from pp512→pp32768 vs **36% for Vulkan** (1.4× faster at 32K)
+- SYCL is faster at all context lengths, including short context
+- Token generation: SYCL 15.0-15.6 vs Vulkan 14.1-14.6 tok/s (~7% faster)
+- SYCL TG actually improves after warmup (tg256 > tg128)
 - SYCL does NOT require XMX — oneMKL dispatches to the best available path (DP4a on Meteor Lake)
-
-**SYCL extended token generation** (same model):
-
-| tg128 | tg256 | tg512 | tg1024 | tg2048 |
-|---|---|---|---|---|
-| 15.1 | 15.0 | 14.7 | 14.6 | 14.0 |
-
-TG degrades only 7% from 128→2048 generated tokens — very stable.
 
 **Why not OpenVINO?** The llama.cpp OpenVINO backend (merged March 2026) is broken —
 it doesn't support K-quant formats (Q4_K_M, Q4_K_XL, Q5_K_M). Both CPU and GPU modes

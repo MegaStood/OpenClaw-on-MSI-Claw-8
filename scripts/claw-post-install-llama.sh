@@ -556,23 +556,27 @@ RUNMODEL
     echo "  │  LOCAL MODELS (downloaded as GGUF, run with SYCL/Vulkan GPU)    │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
-    echo "  │  1) Qwen3.5-35B-A3B Q4_K_M   [~21GB]  ★ RECOMMENDED           │"
+    echo "  │  1) Gemma 4 E4B Q4_K_M          [~5GB]   ★ RECOMMENDED        │"
+    echo "  │     Dense 7.5B (4B active MoE). Google's latest multimodal.    │"
+    echo "  │     Fastest prefill (467 tok/s SYCL FP16). 14.5 t/s TG.       │"
+    echo "  │                                                                 │"
+    echo "  │  2) Qwen3.5-35B-A3B Q4_K_M      [~21GB]  🧠 BEST AGENT       │"
     echo "  │     MoE 35B/3B active. Hybrid SSM+Attention architecture.      │"
     echo "  │     Best 32k context scaling. Thinking mode. ~9.5 t/s.         │"
     echo "  │                                                                 │"
-    echo "  │  2) LFM2-24B-A2B Q5_K_M      [~17GB]  ⚡ FASTEST              │"
+    echo "  │  3) LFM2-24B-A2B Q5_K_M         [~17GB]  ⚡ FASTEST TG       │"
     echo "  │     MoE 24B/2B active. Liquid AI hybrid architecture.          │"
     echo "  │     Fastest on Arc 140V at ~20 t/s. Good tool dispatch.        │"
     echo "  │                                                                 │"
-    echo "  │  3) GLM-4.7-Flash Q4_K_M     [~18GB]                           │"
+    echo "  │  4) GLM-4.7-Flash Q4_K_M        [~18GB]                        │"
     echo "  │     MoE 30B/3B active. Best thinking mode for reasoning.       │"
     echo "  │     Tool calling + thinking. ~12 t/s on Arc 140V.              │"
     echo "  │                                                                 │"
-    echo "  │  4) Qwen3.5-4B Q4_K_M        [~3GB]   ⚡ SMALLEST             │"
+    echo "  │  5) Qwen3.5-4B Q4_K_M           [~3GB]   ⚡ SMALLEST          │"
     echo "  │     Dense 4B. Lightweight, ~11.5 t/s on Arc 140V.              │"
     echo "  │     Good for quick tasks. Thinking mode not recommended.        │"
     echo "  │                                                                 │"
-    echo "  │  5) Crow-4B-Opus-4.6 Q5_K_M  [~3GB]   🧠 DISTILLED           │"
+    echo "  │  6) Crow-4B-Opus-4.6 Q5_K_M     [~3GB]   🧠 DISTILLED        │"
     echo "  │     Dense 4B. Claude Opus 4.6 distilled reasoning.             │"
     echo "  │     Reduced thinking loops vs base Qwen3.5-4B. ~11.5 t/s.     │"
     echo "  │                                                                 │"
@@ -580,28 +584,36 @@ RUNMODEL
     echo "  │  CLOUD OPTIONS (configure after install)                        │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
-    echo "  │  6) Anthropic API     [requires API key from console.anthropic] │"
+    echo "  │  7) Anthropic API     [requires API key from console.anthropic] │"
     echo "  │     Use Claude as cloud backend. Best reasoning quality.        │"
     echo "  │     Configure in OpenClaw settings after install.               │"
     echo "  │                                                                 │"
-    echo "  │  7) Remote llama.cpp / vLLM server on local network             │"
+    echo "  │  8) Remote llama.cpp / vLLM server on local network             │"
     echo "  │     Point OpenClaw to a more powerful machine.                  │"
     echo "  │     Configure baseUrl in OpenClaw settings after install.       │"
     echo "  │                                                                 │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
-    echo "  │  8) Skip download — I'll add GGUF models manually later.        │"
+    echo "  │  9) Skip download — I'll add GGUF models manually later.        │"
     echo "  └─────────────────────────────────────────────────────────────────┘"
     echo ""
     echo -e "${YELLOW}  Note: Models are downloaded to /shared/models/gguf/${NC}"
     echo -e "${YELLOW}  You can also manually drop .gguf files there anytime.${NC}"
     echo ""
-    read -p "  Choose [1-8]: " MODEL_CHOICE
+    read -p "  Choose [1-9]: " MODEL_CHOICE
 
     HF_DL="sudo -u $REAL_USER huggingface-cli download"
     GGUF_DIR="/shared/models/gguf"
 
     case $MODEL_CHOICE in
         1)
+            MODEL_DISPLAY="Gemma 4 E4B Q4_K_M"
+            echo "  Downloading Gemma 4 E4B Q4_K_M (~5GB)..."
+            $HF_DL unsloth/gemma-4-E4B-it-GGUF \
+                gemma-4-E4B-it-Q4_K_M.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
+            ;;
+        2)
             MODEL_DISPLAY="Qwen3.5-35B-A3B Q4_K_M"
             echo "  Downloading Qwen3.5-35B-A3B Q4_K_M (~21GB, this may take a while)..."
             $HF_DL unsloth/Qwen3.5-35B-A3B-GGUF \
@@ -609,7 +621,7 @@ RUNMODEL
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
-        2)
+        3)
             MODEL_DISPLAY="LFM2-24B-A2B Q5_K_M"
             echo "  Downloading LFM2-24B-A2B Q5_K_M (~17GB, this may take a while)..."
             $HF_DL LiquidAI/LFM2-24B-A2B-GGUF \
@@ -617,7 +629,7 @@ RUNMODEL
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
-        3)
+        4)
             MODEL_DISPLAY="GLM-4.7-Flash Q4_K_M"
             echo "  Downloading GLM-4.7-Flash Q4_K_M (~18GB, this may take a while)..."
             $HF_DL unsloth/GLM-4.7-Flash-GGUF \
@@ -625,7 +637,7 @@ RUNMODEL
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
-        4)
+        5)
             MODEL_DISPLAY="Qwen3.5-4B Q4_K_M"
             echo "  Downloading Qwen3.5-4B Q4_K_M (~3GB, this may take a while)..."
             $HF_DL unsloth/Qwen3.5-4B-GGUF \
@@ -633,7 +645,7 @@ RUNMODEL
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
-        5)
+        6)
             MODEL_DISPLAY="Crow-4B-Opus-4.6 Q5_K_M"
             echo "  Downloading Crow-4B-Opus-4.6-Distill Q5_K_M (~3GB, this may take a while)..."
             $HF_DL crownelius/Crow-4B-Opus-4.6-Distill-Heretic_Qwen3.5 \
@@ -641,7 +653,7 @@ RUNMODEL
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
-        6)
+        7)
             MODEL_DISPLAY="Anthropic API"
             PULLED_MODEL="anthropic-api"
             echo ""
@@ -657,7 +669,7 @@ RUNMODEL
             echo ""
             echo "  Get your API key from: https://console.anthropic.com"
             ;;
-        7)
+        8)
             MODEL_DISPLAY="Remote server"
             PULLED_MODEL="remote-server"
             echo ""
@@ -670,7 +682,7 @@ RUNMODEL
             echo ""
             echo "  Start remote llama.cpp with: --host 0.0.0.0"
             ;;
-        8|*)
+        9|*)
             MODEL_DISPLAY="none"
             PULLED_MODEL="none"
             ;;

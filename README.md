@@ -154,21 +154,25 @@ better at long contexts where Vulkan degrades.
 
 | Backend | pp512 | pp1024 | pp2048 | pp4096 | pp8192 | pp16384 | pp32768 | tg128 | tg256 | tg512 | tg1024 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **SYCL (JIT)** | 311 | 317 | 318 | 314 | 305 | 290 | 257 | 15.0 | 15.6 | 15.5 | 15.2 |
+| **SYCL FP16** | **463** | **468** | **466** | **452** | **434** | **401** | **345** | 14.6 | 14.6 | 14.5 | 14.2 |
+| **SYCL FP32** | 311 | 317 | 318 | 314 | 305 | 290 | 257 | **15.0** | **15.6** | **15.5** | **15.2** |
 | **SYCL AOT (mtl_h)** | 309 | 319 | 318 | 314 | 306 | 290 | 259 | 15.0 | 15.0 | 14.9 | 14.6 |
 | **Vulkan** | 292 | 278 | 281 | 286 | 267 | 237 | 188 | 14.6 | 14.6 | 14.4 | 14.1 |
 
-SYCL AOT = compiled with `-DGGML_SYCL_DEVICE_ARCH=mtl_h` (ahead-of-time for Meteor Lake-H).
-SYCL JIT = default build without device arch (just-in-time compilation at runtime).
+Build flags tested:
+- SYCL FP16 = `-DGGML_SYCL=ON -DGGML_SYCL_F16=ON` (FP16 intermediate accumulation)
+- SYCL FP32 = `-DGGML_SYCL=ON` (default FP32 accumulation)
+- SYCL AOT = `-DGGML_SYCL=ON -DGGML_SYCL_DEVICE_ARCH=mtl_h` (ahead-of-time for Meteor Lake-H)
+- Vulkan = `-DGGML_VULKAN=ON`
 
 Key findings:
-- **SYCL loses only 17%** from pp512→pp32768 vs **36% for Vulkan** (1.4× faster at 32K)
-- SYCL is faster at all context lengths, including short context
-- Token generation: SYCL JIT 15.0-15.6 vs Vulkan 14.1-14.6 tok/s (~7% faster)
-- **AOT does NOT improve performance** — prefill is identical, TG is ~4% slower than JIT
-- SYCL TG actually improves after warmup (tg256 > tg128) — more pronounced with JIT
+- **SYCL FP16 prefill is +49% faster** than FP32 (311→463 at pp512) — the biggest win
+- **SYCL FP16 at 32K is 1.8× faster than Vulkan** (345 vs 188 tok/s)
+- FP16 TG is ~5% slower than FP32 (15.2→14.2 at tg1024) — compute overhead on memory-bound path
+- **AOT does NOT improve performance** — prefill identical to FP32 JIT, TG ~4% slower
+- SYCL FP32 has best TG (15.0-15.6) with warmup effect (tg256 > tg128)
 - SYCL does NOT require XMX — oneMKL dispatches to the best available path (DP4a on Meteor Lake)
-- **Recommendation: use default SYCL build (JIT)** — AOT adds build complexity with no benefit
+- **Recommendation: SYCL FP16 for prefill-heavy workloads, SYCL FP32 for TG-heavy workloads**
 
 **Why not OpenVINO?** The llama.cpp OpenVINO backend (merged March 2026) is broken —
 it doesn't support K-quant formats (Q4_K_M, Q4_K_XL, Q5_K_M). Both CPU and GPU modes

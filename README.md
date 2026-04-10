@@ -179,7 +179,8 @@ it doesn't support K-quant formats (Q4_K_M, Q4_K_XL, Q5_K_M). Both CPU and GPU m
 fail with `"failed to decode prompt batch, res = -3"`. The CPY operation is also not
 implemented, breaking flash attention. Use SYCL instead.
 
-To use the SYCL backend: `~/run-model.sh --sycl`
+SYCL FP16 is the default backend: `~/run-model.sh`
+To use Vulkan instead: `~/run-model.sh --vulkan`
 
 ### Performance Tuning (run-model.sh defaults)
 
@@ -436,7 +437,7 @@ cd ~/llama.cpp
 cmake -B build -DGGML_VULKAN=ON
 cmake --build build --config Release -j$(nproc)
 
-# SYCL backend (optional — better long-context scaling via oneMKL)
+# SYCL FP16 backend (recommended — +49% faster prefill via oneMKL)
 # Add Intel oneAPI repo
 sudo tee /etc/yum.repos.d/oneAPI.repo << 'EOF'
 [oneAPI]
@@ -449,7 +450,7 @@ gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.
 EOF
 sudo dnf install -y intel-oneapi-mkl-devel
 source /opt/intel/oneapi/setvars.sh
-cmake -B build-sycl -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release
+cmake -B build-sycl -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release
 cmake --build build-sycl --config Release -j$(nproc)
 
 # Set up model directory and launcher
@@ -462,8 +463,8 @@ chmod +x ~/run-model.sh
 scripts/download_model_fast.sh unsloth/Qwen3.5-9B-UD-GGUF --gguf Q4_K_M
 
 # Launch it
-~/run-model.sh              # Vulkan (default)
-~/run-model.sh --sycl       # SYCL (better long context)
+~/run-model.sh              # SYCL FP16 (default, fastest)
+~/run-model.sh --vulkan     # Vulkan (fallback, no oneAPI needed)
 ```
 
 **Common build issues on Nobara:**

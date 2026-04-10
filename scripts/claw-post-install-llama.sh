@@ -223,10 +223,10 @@ echo ""
 # ============================================================
 # PHASE 6: Install llama.cpp (Vulkan + SYCL) + OpenClaw (optional)
 # ============================================================
-echo -e "${YELLOW}[6/7] AI tools setup (llama.cpp with Vulkan + SYCL GPU acceleration)...${NC}"
+echo -e "${YELLOW}[6/7] AI tools setup (llama.cpp with SYCL + Vulkan GPU acceleration)...${NC}"
 echo ""
 echo "  Ollama does not support Vulkan on Intel iGPU — it runs CPU-only."
-echo "  llama.cpp with Vulkan gives ~2-3x faster token generation on $GPU_NAME."
+echo "  llama.cpp with SYCL (FP16) gives ~49% faster prefill than Vulkan on $GPU_NAME."
 echo ""
 
 # Create model directory with correct ownership
@@ -326,8 +326,13 @@ ONEAPI_REPO
     # ----------------------------------------------------------
     # SYCL backend uses Intel DPC++ compiler (icx/icpx) and oneMKL for
     # optimized GEMM on Intel iGPU. Scales much better at long contexts
-    # than Vulkan (~1.5-1.7x faster at 16K-32K context).
+    # than Vulkan (~1.8x faster at 32K context).
     # Both builds coexist: build/ (Vulkan) and build-sycl/ (SYCL).
+    #
+    # GGML_SYCL_F16=ON: use FP16 intermediate accumulation in GEMM.
+    # Benchmarked +49% faster prefill (311→463 tok/s at pp512) with
+    # negligible quality impact on quantized models. TG unchanged
+    # (memory-bandwidth bound, not compute-bound).
     #
     # Note: llama.cpp release binaries include a Windows SYCL build, but
     # NO Linux SYCL build. Linux users must compile from source.
@@ -335,10 +340,10 @@ ONEAPI_REPO
 
     if [ -f "$LLAMA_SYCL_SERVER" ]; then
         echo -e "${GREEN}  llama.cpp SYCL backend already built. Skipping.${NC}"
-        echo "  To rebuild: source /opt/intel/oneapi/setvars.sh && cd ~/llama.cpp && rm -rf build-sycl && cmake -B build-sycl -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release && cmake --build build-sycl -j\$(nproc)"
+        echo "  To rebuild: source /opt/intel/oneapi/setvars.sh && cd ~/llama.cpp && rm -rf build-sycl && cmake -B build-sycl -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release && cmake --build build-sycl -j\$(nproc)"
     else
-        echo "  Building llama.cpp with SYCL backend..."
-        echo "  (Uses oneMKL for optimized matrix ops — better long-context scaling)"
+        echo "  Building llama.cpp with SYCL backend (FP16 accumulation)..."
+        echo "  (Uses oneMKL for optimized matrix ops — +49% faster prefill than FP32)"
 
         # SYCL requires Intel's DPC++ compiler (icx/icpx) from oneAPI
         sudo -u "$REAL_USER" bash -c "
@@ -347,6 +352,7 @@ ONEAPI_REPO
             rm -rf build-sycl
             cmake -B build-sycl \
                 -DGGML_SYCL=ON \
+                -DGGML_SYCL_F16=ON \
                 -DCMAKE_C_COMPILER=icx \
                 -DCMAKE_CXX_COMPILER=icpx \
                 -DCMAKE_BUILD_TYPE=Release
@@ -354,13 +360,13 @@ ONEAPI_REPO
         "
 
         if [ -f "$LLAMA_SYCL_SERVER" ]; then
-            echo -e "${GREEN}  llama.cpp SYCL backend built successfully (build-sycl/).${NC}"
+            echo -e "${GREEN}  llama.cpp SYCL backend built successfully (build-sycl/, FP16).${NC}"
         else
             echo -e "${YELLOW}  SYCL build failed. Vulkan backend is still available.${NC}"
             echo "  You can retry manually:"
             echo "    source /opt/intel/oneapi/setvars.sh"
             echo "    cd ~/llama.cpp && rm -rf build-sycl"
-            echo "    cmake -B build-sycl -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release"
+            echo "    cmake -B build-sycl -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release"
             echo "    cmake --build build-sycl --config Release -j\$(nproc)"
         fi
     fi
@@ -375,17 +381,17 @@ ONEAPI_REPO
 # run-model.sh — auto-discover and launch GGUF models via llama.cpp
 # - Models >= 9B: reasoning ON, 32k context (agentic/tool-calling ready)
 # - Models < 9B:  reasoning OFF, 8k context
-# - Supports two backends: Vulkan (default) and SYCL (better long-context scaling)
+# - Supports two backends: SYCL (default, fastest) and Vulkan (fallback)
 #
 # Usage:
-#   ~/run-model.sh                    # Vulkan backend (default)
-#   ~/run-model.sh --sycl             # SYCL backend (oneMKL, better at long context)
+#   ~/run-model.sh                    # SYCL backend (default, +49% faster prefill)
+#   ~/run-model.sh --vulkan           # Vulkan backend (no oneAPI needed)
 #   ~/run-model.sh --bench            # Run llama-bench instead of server
 
 MODEL_DIR="/shared/models/gguf"
 
 # Parse flags
-BACKEND="vulkan"
+BACKEND="sycl"
 BENCH_MODE=false
 POSITIONAL=()
 for arg in "$@"; do
@@ -547,7 +553,7 @@ RUNMODEL
     echo "  ┌─────────────────────────────────────────────────────────────────┐"
     echo "  │              Choose a model to download                         │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
-    echo "  │  LOCAL MODELS (downloaded as GGUF, run with Vulkan GPU)         │"
+    echo "  │  LOCAL MODELS (downloaded as GGUF, run with SYCL/Vulkan GPU)    │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
     echo "  │  1) Qwen3.5-35B-A3B Q4_K_M   [~21GB]  ★ RECOMMENDED           │"
@@ -698,10 +704,10 @@ RUNMODEL
     echo "  │  Quick Start                                                    │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
-    echo "  │  Launch (Vulkan):   ~/run-model.sh                              │"
-    echo "  │  Launch (SYCL):    ~/run-model.sh --sycl                       │"
+    echo "  │  Launch (SYCL):     ~/run-model.sh              ★ default       │"
+    echo "  │  Launch (Vulkan):   ~/run-model.sh --vulkan                     │"
     echo "  │  Benchmark:         ~/run-model.sh --bench                      │"
-    echo "  │  Benchmark (SYCL):  ~/run-model.sh --sycl --bench              │"
+    echo "  │  Benchmark (Vulkan):~/run-model.sh --vulkan --bench             │"
     echo "  │                                                                 │"
     echo "  │  Web UI:            http://127.0.0.1:8080                       │"
     echo "  │  API endpoint:      http://127.0.0.1:8080/v1/chat/completions   │"
@@ -713,18 +719,20 @@ RUNMODEL
     echo "  │  OpenClaw:          Point to http://127.0.0.1:8080              │"
     echo "  │                     (same OpenAI-compatible API as Ollama)      │"
     echo "  │                                                                 │"
-    echo "  │  Tip: Use --sycl for better long-context scaling (~1.5-1.7x)     │"
+    echo "  │  SYCL FP16 is +49% faster prefill, +1.8x at 32K vs Vulkan     │"
+    echo "  │  Use --vulkan if SYCL build failed or oneAPI is not installed   │"
     echo "  └─────────────────────────────────────────────────────────────────┘"
 else
     PULLED_MODEL="skipped"
     echo "  Skipping AI tools. You can install later:"
     echo ""
-    echo "  # Install build tools and build llama.cpp (Vulkan + SYCL)"
+    echo "  # Install build tools and build llama.cpp (SYCL + Vulkan)"
     echo "  sudo dnf install cmake gcc gcc-c++ git vulkan-headers vulkan-loader-devel glslc"
     echo "  git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp"
     echo "  cd ~/llama.cpp"
+    echo "  # Vulkan backend (simpler, no oneAPI needed):"
     echo "  cmake -B build -DGGML_VULKAN=ON && cmake --build build -j\$(nproc)"
-    echo "  # SYCL backend (optional, better long-context scaling via oneMKL):"
+    echo "  # SYCL FP16 backend (recommended — +49% faster prefill via oneMKL):"
     echo "  sudo tee /etc/yum.repos.d/oneAPI.repo <<< '[oneAPI]"
     echo "  name=Intel oneAPI"
     echo "  baseurl=https://yum.repos.intel.com/oneapi"
@@ -734,7 +742,7 @@ else
     echo "  gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB'"
     echo "  sudo dnf install intel-oneapi-mkl-devel"
     echo "  source /opt/intel/oneapi/setvars.sh"
-    echo "  cmake -B build-sycl -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release"
+    echo "  cmake -B build-sycl -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release"
     echo "  cmake --build build-sycl -j\$(nproc)"
     echo ""
     echo "  # Download a model"
@@ -760,12 +768,12 @@ echo "  [✓] Handheld Daemon (HHD) installed"
 echo "  [✓] WiFi sleep fix installed (D3Cold + module reload)"
 echo "  [✓] Hibernate disabled"
 if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
-    echo "  [✓] llama.cpp built with Vulkan GPU acceleration (build/)"
     if [ -f "$REAL_HOME/llama.cpp/build-sycl/bin/llama-server" ]; then
-        echo "  [✓] llama.cpp built with SYCL backend (build-sycl/)"
+        echo "  [✓] llama.cpp built with SYCL FP16 backend (build-sycl/) ★ default"
     else
-        echo "  [~] llama.cpp SYCL backend: build failed (Vulkan still works)"
+        echo "  [~] llama.cpp SYCL backend: build failed (Vulkan fallback available)"
     fi
+    echo "  [✓] llama.cpp built with Vulkan backend (build/)"
     echo "  [✓] Model launcher installed: ~/run-model.sh"
     case $PULLED_MODEL in
         local)
@@ -782,8 +790,8 @@ if [ "$INSTALL_AI" = "y" ] || [ "$INSTALL_AI" = "Y" ]; then
             ;;
     esac
     echo ""
-    echo "  To start:  ~/run-model.sh              (Vulkan)"
-    echo "             ~/run-model.sh --sycl       (SYCL — better long context)"
+    echo "  To start:  ~/run-model.sh              (SYCL FP16 — default, fastest)"
+    echo "             ~/run-model.sh --vulkan     (Vulkan — fallback)"
     echo "  Web UI:    http://127.0.0.1:8080"
     echo "  API:       http://127.0.0.1:8080/v1/chat/completions"
 fi

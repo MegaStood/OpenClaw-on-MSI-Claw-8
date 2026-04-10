@@ -569,9 +569,9 @@ RUNMODEL
         echo "  │     MoE 35B/3B active. Hybrid SSM+Attention architecture.      │"
         echo "  │     Best agent model (Tau-2: 81.2). Thinking mode.             │"
         echo "  │                                                                 │"
-        echo "  │  3) LFM2-24B-A2B Q5_K_M         [~17GB]  ⚡ FASTEST TG       │"
-        echo "  │     MoE 24B/2B active. Liquid AI hybrid architecture.          │"
-        echo "  │     Fastest on Arc 140V at ~20 t/s. Good tool dispatch.        │"
+        echo "  │  3) GPT-OSS-20B Q4_K_M           [~12GB]  🧠 OpenAI OSS        │"
+        echo "  │     MoE 21B/3.6B active. OpenAI's open-weight model.           │"
+        echo "  │     Strong reasoning + agentic tasks. Fits 32GB comfortably.   │"
         echo "  │                                                                 │"
         echo "  │  4) Gemma 4 E4B Q4_K_M          [~5GB]   ⚡ FASTEST PP        │"
         echo "  │     7.5B params. Fastest prefill (467 tok/s). 14.5 t/s TG.    │"
@@ -632,7 +632,7 @@ RUNMODEL
         case $MODEL_CHOICE in
             1) MODEL_ID="gemma4-26b" ;;
             2) MODEL_ID="qwen35-35b-iq4nl" ;;
-            3) MODEL_ID="lfm2-24b" ;;
+            3) MODEL_ID="gpt-oss-20b" ;;
             4) MODEL_ID="gemma4-e4b" ;;
             5) MODEL_ID="qwen35-4b" ;;
             6) MODEL_ID="anthropic-api" ;;
@@ -675,11 +675,11 @@ RUNMODEL
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
-        lfm2-24b)
-            MODEL_DISPLAY="LFM2-24B-A2B Q5_K_M"
-            echo "  Downloading LFM2-24B-A2B Q5_K_M (~17GB, this may take a while)..."
-            $HF_DL LiquidAI/LFM2-24B-A2B-GGUF \
-                LFM2-24B-A2B-Q5_K_M.gguf \
+        gpt-oss-20b)
+            MODEL_DISPLAY="GPT-OSS-20B Q4_K_M"
+            echo "  Downloading GPT-OSS-20B Q4_K_M (~12GB, this may take a while)..."
+            $HF_DL unsloth/gpt-oss-20b-GGUF \
+                gpt-oss-20b-Q4_K_M.gguf \
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;

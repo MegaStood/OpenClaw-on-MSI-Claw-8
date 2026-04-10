@@ -565,9 +565,9 @@ RUNMODEL
         echo "  │     MoE 26B/4B active. Google's latest multimodal.             │"
         echo "  │     Fast prefill + strong reasoning. Multimodal (vision).      │"
         echo "  │                                                                 │"
-        echo "  │  2) Qwen3.5-35B-A3B Q4_K_M      [~21GB]  🧠 BEST AGENT       │"
+        echo "  │  2) Qwen3.5-35B-A3B UD-IQ4_NL   [~19GB]  🧠 BEST AGENT       │"
         echo "  │     MoE 35B/3B active. Hybrid SSM+Attention architecture.      │"
-        echo "  │     Best agent model (Tau-2: 81.2). Thinking mode. ~9.5 t/s.  │"
+        echo "  │     Best agent model (Tau-2: 81.2). Thinking mode.             │"
         echo "  │                                                                 │"
         echo "  │  3) LFM2-24B-A2B Q5_K_M         [~17GB]  ⚡ FASTEST TG       │"
         echo "  │     MoE 24B/2B active. Liquid AI hybrid architecture.          │"
@@ -580,7 +580,7 @@ RUNMODEL
         echo "  │     Dense 4B. Lightweight, fast for quick tasks.               │"
         echo "  │                                                                 │"
     else
-        # 16GB Meteor Lake — only small/medium models fit
+        # 16GB Meteor Lake — only models up to ~8GB fit comfortably
         echo "  │  RAM: 16 GB (Meteor Lake) — models up to ~8GB recommended      │"
         echo "  ├─────────────────────────────────────────────────────────────────┤"
         echo "  │                                                                 │"
@@ -594,34 +594,34 @@ RUNMODEL
         echo "  │  3) Crow-4B-Opus-4.6 Q5_K_M     [~3GB]   🧠 DISTILLED        │"
         echo "  │     Dense 4B. Claude Opus 4.6 distilled reasoning.             │"
         echo "  │                                                                 │"
-        echo "  │  4) Qwen3.5-35B-A3B Q4_K_M      [~21GB]  ⚠️ 32GB ONLY       │"
-        echo "  │     Too large for 16GB. Listed for manual partial offload.     │"
-        echo "  │                                                                 │"
-        echo "  │  5) LFM2-24B-A2B Q5_K_M         [~17GB]  ⚠️ 32GB ONLY       │"
-        echo "  │     Too large for 16GB. Listed for manual partial offload.     │"
-        echo "  │                                                                 │"
+    fi
+
+    if [ "$PLATFORM" = "lunar_lake" ]; then
+        CLOUD_A=6; CLOUD_B=7; SKIP_N=8
+    else
+        CLOUD_A=4; CLOUD_B=5; SKIP_N=6
     fi
 
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │  CLOUD OPTIONS (configure after install)                        │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
     echo "  │                                                                 │"
-    echo "  │  6) Anthropic API     [requires API key from console.anthropic] │"
+    printf "  │  %d) Anthropic API     [requires API key from console.anthropic] │\n" "$CLOUD_A"
     echo "  │     Use Claude as cloud backend. Best reasoning quality.        │"
     echo "  │     Configure in OpenClaw settings after install.               │"
     echo "  │                                                                 │"
-    echo "  │  7) Remote llama.cpp / vLLM server on local network             │"
+    printf "  │  %d) Remote llama.cpp / vLLM server on local network             │\n" "$CLOUD_B"
     echo "  │     Point OpenClaw to a more powerful machine.                  │"
     echo "  │     Configure baseUrl in OpenClaw settings after install.       │"
     echo "  │                                                                 │"
     echo "  ├─────────────────────────────────────────────────────────────────┤"
-    echo "  │  8) Skip download — I'll add GGUF models manually later.        │"
+    printf "  │  %d) Skip download — I'll add GGUF models manually later.        │\n" "$SKIP_N"
     echo "  └─────────────────────────────────────────────────────────────────┘"
     echo ""
     echo -e "${YELLOW}  Note: Models are downloaded to /shared/models/gguf/${NC}"
     echo -e "${YELLOW}  You can also manually drop .gguf files there anytime.${NC}"
     echo ""
-    read -p "  Choose [1-8]: " MODEL_CHOICE
+    read -p "  Choose [1-$SKIP_N]: " MODEL_CHOICE
 
     HF_DL="sudo -u $REAL_USER huggingface-cli download"
     GGUF_DIR="/shared/models/gguf"
@@ -631,7 +631,7 @@ RUNMODEL
     if [ "$PLATFORM" = "lunar_lake" ]; then
         case $MODEL_CHOICE in
             1) MODEL_ID="gemma4-26b" ;;
-            2) MODEL_ID="qwen35-35b" ;;
+            2) MODEL_ID="qwen35-35b-iq4nl" ;;
             3) MODEL_ID="lfm2-24b" ;;
             4) MODEL_ID="gemma4-e4b" ;;
             5) MODEL_ID="qwen35-4b" ;;
@@ -644,15 +644,21 @@ RUNMODEL
             1) MODEL_ID="gemma4-e4b" ;;
             2) MODEL_ID="qwen35-4b" ;;
             3) MODEL_ID="crow-4b" ;;
-            4) MODEL_ID="qwen35-35b" ;;
-            5) MODEL_ID="lfm2-24b" ;;
-            6) MODEL_ID="anthropic-api" ;;
-            7) MODEL_ID="remote-server" ;;
-            8|*) MODEL_ID="skip" ;;
+            4) MODEL_ID="anthropic-api" ;;
+            5) MODEL_ID="remote-server" ;;
+            6|*) MODEL_ID="skip" ;;
         esac
     fi
 
     case $MODEL_ID in
+        qwen35-35b-iq4nl)
+            MODEL_DISPLAY="Qwen3.5-35B-A3B UD-IQ4_NL"
+            echo "  Downloading Qwen3.5-35B-A3B UD-IQ4_NL (~19GB, this may take a while)..."
+            $HF_DL unsloth/Qwen3.5-35B-A3B-GGUF \
+                Qwen3.5-35B-A3B-UD-IQ4_NL.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
+            ;;
         gemma4-26b)
             MODEL_DISPLAY="Gemma 4 26B-A4B UD-Q4_K_XL"
             echo "  Downloading Gemma 4 26B-A4B UD-Q4_K_XL (~17GB, this may take a while)..."
@@ -669,27 +675,11 @@ RUNMODEL
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;
-        qwen35-35b)
-            MODEL_DISPLAY="Qwen3.5-35B-A3B Q4_K_M"
-            echo "  Downloading Qwen3.5-35B-A3B Q4_K_M (~21GB, this may take a while)..."
-            $HF_DL unsloth/Qwen3.5-35B-A3B-GGUF \
-                Qwen3.5-35B-A3B-Q4_K_M.gguf \
-                --local-dir "$GGUF_DIR"
-            PULLED_MODEL="local"
-            ;;
         lfm2-24b)
             MODEL_DISPLAY="LFM2-24B-A2B Q5_K_M"
             echo "  Downloading LFM2-24B-A2B Q5_K_M (~17GB, this may take a while)..."
             $HF_DL LiquidAI/LFM2-24B-A2B-GGUF \
                 LFM2-24B-A2B-Q5_K_M.gguf \
-                --local-dir "$GGUF_DIR"
-            PULLED_MODEL="local"
-            ;;
-        glm-flash)
-            MODEL_DISPLAY="GLM-4.7-Flash Q4_K_M"
-            echo "  Downloading GLM-4.7-Flash Q4_K_M (~18GB, this may take a while)..."
-            $HF_DL unsloth/GLM-4.7-Flash-GGUF \
-                GLM-4.7-Flash-Q4_K_M.gguf \
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;

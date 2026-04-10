@@ -569,9 +569,9 @@ RUNMODEL
         echo "  │     MoE 35B/3B active. Hybrid SSM+Attention architecture.      │"
         echo "  │     Best agent model (Tau-2: 81.2). Thinking mode.             │"
         echo "  │                                                                 │"
-        echo "  │  3) GPT-OSS-20B Q4_K_M           [~12GB]  🧠 OpenAI OSS        │"
+        echo "  │  3) GPT-OSS-20B F16              [~14GB]  🧠 OpenAI OSS        │"
         echo "  │     MoE 21B/3.6B active. OpenAI's open-weight model.           │"
-        echo "  │     Strong reasoning + agentic tasks. Fits 32GB comfortably.   │"
+        echo "  │     F16 = lossless (native MXFP4 dequantized). Reasoning.     │"
         echo "  │                                                                 │"
         echo "  │  4) Gemma 4 E4B Q4_K_M          [~5GB]   ⚡ FASTEST PP        │"
         echo "  │     7.5B params. Fastest prefill (467 tok/s). 14.5 t/s TG.    │"
@@ -676,10 +676,10 @@ RUNMODEL
             PULLED_MODEL="local"
             ;;
         gpt-oss-20b)
-            MODEL_DISPLAY="GPT-OSS-20B Q4_K_M"
-            echo "  Downloading GPT-OSS-20B Q4_K_M (~12GB, this may take a while)..."
+            MODEL_DISPLAY="GPT-OSS-20B F16"
+            echo "  Downloading GPT-OSS-20B F16 (~14GB, this may take a while)..."
             $HF_DL unsloth/gpt-oss-20b-GGUF \
-                gpt-oss-20b-Q4_K_M.gguf \
+                gpt-oss-20b-F16.gguf \
                 --local-dir "$GGUF_DIR"
             PULLED_MODEL="local"
             ;;

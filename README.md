@@ -154,15 +154,21 @@ better at long contexts where Vulkan degrades.
 
 | Backend | pp512 | pp1024 | pp2048 | pp4096 | pp8192 | pp16384 | pp32768 | tg128 | tg256 | tg512 | tg1024 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **SYCL** | 311 | 317 | 318 | 314 | 305 | 290 | 257 | 15.0 | 15.6 | 15.5 | 15.2 |
+| **SYCL (JIT)** | 311 | 317 | 318 | 314 | 305 | 290 | 257 | 15.0 | 15.6 | 15.5 | 15.2 |
+| **SYCL AOT (mtl_h)** | 309 | 319 | 318 | 314 | 306 | 290 | 259 | 15.0 | 15.0 | 14.9 | 14.6 |
 | **Vulkan** | 292 | 278 | 281 | 286 | 267 | 237 | 188 | 14.6 | 14.6 | 14.4 | 14.1 |
+
+SYCL AOT = compiled with `-DGGML_SYCL_DEVICE_ARCH=mtl_h` (ahead-of-time for Meteor Lake-H).
+SYCL JIT = default build without device arch (just-in-time compilation at runtime).
 
 Key findings:
 - **SYCL loses only 17%** from pp512→pp32768 vs **36% for Vulkan** (1.4× faster at 32K)
 - SYCL is faster at all context lengths, including short context
-- Token generation: SYCL 15.0-15.6 vs Vulkan 14.1-14.6 tok/s (~7% faster)
-- SYCL TG actually improves after warmup (tg256 > tg128)
+- Token generation: SYCL JIT 15.0-15.6 vs Vulkan 14.1-14.6 tok/s (~7% faster)
+- **AOT does NOT improve performance** — prefill is identical, TG is ~4% slower than JIT
+- SYCL TG actually improves after warmup (tg256 > tg128) — more pronounced with JIT
 - SYCL does NOT require XMX — oneMKL dispatches to the best available path (DP4a on Meteor Lake)
+- **Recommendation: use default SYCL build (JIT)** — AOT adds build complexity with no benefit
 
 **Why not OpenVINO?** The llama.cpp OpenVINO backend (merged March 2026) is broken —
 it doesn't support K-quant formats (Q4_K_M, Q4_K_XL, Q5_K_M). Both CPU and GPU modes

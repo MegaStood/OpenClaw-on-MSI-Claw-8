@@ -557,25 +557,24 @@ RUNMODEL
     echo "  ├─────────────────────────────────────────────────────────────────┤"
 
     if [ "$PLATFORM" = "lunar_lake" ]; then
-        # 32GB Lunar Lake — large MoE models fit, recommend best agent model
+        # 32GB Lunar Lake — large MoE models fit
         echo "  │  RAM: 32 GB (Lunar Lake) — large models supported             │"
         echo "  ├─────────────────────────────────────────────────────────────────┤"
         echo "  │                                                                 │"
-        echo "  │  1) Qwen3.5-35B-A3B Q4_K_M      [~21GB]  ★ RECOMMENDED        │"
+        echo "  │  1) Gemma 4 26B-A4B UD-Q4_K_XL  [~17GB]  ★ RECOMMENDED        │"
+        echo "  │     MoE 26B/4B active. Google's latest multimodal.             │"
+        echo "  │     Fast prefill + strong reasoning. Multimodal (vision).      │"
+        echo "  │                                                                 │"
+        echo "  │  2) Qwen3.5-35B-A3B Q4_K_M      [~21GB]  🧠 BEST AGENT       │"
         echo "  │     MoE 35B/3B active. Hybrid SSM+Attention architecture.      │"
         echo "  │     Best agent model (Tau-2: 81.2). Thinking mode. ~9.5 t/s.  │"
         echo "  │                                                                 │"
-        echo "  │  2) LFM2-24B-A2B Q5_K_M         [~17GB]  ⚡ FASTEST TG       │"
+        echo "  │  3) LFM2-24B-A2B Q5_K_M         [~17GB]  ⚡ FASTEST TG       │"
         echo "  │     MoE 24B/2B active. Liquid AI hybrid architecture.          │"
         echo "  │     Fastest on Arc 140V at ~20 t/s. Good tool dispatch.        │"
         echo "  │                                                                 │"
-        echo "  │  3) GLM-4.7-Flash Q4_K_M        [~18GB]                        │"
-        echo "  │     MoE 30B/3B active. Best thinking mode for reasoning.       │"
-        echo "  │     Tool calling + thinking. ~12 t/s on Arc 140V.              │"
-        echo "  │                                                                 │"
         echo "  │  4) Gemma 4 E4B Q4_K_M          [~5GB]   ⚡ FASTEST PP        │"
-        echo "  │     7.5B params. Google's latest multimodal.                   │"
-        echo "  │     Fastest prefill (467 tok/s). 14.5 t/s TG.                  │"
+        echo "  │     7.5B params. Fastest prefill (467 tok/s). 14.5 t/s TG.    │"
         echo "  │                                                                 │"
         echo "  │  5) Qwen3.5-4B Q4_K_M           [~3GB]   ⚡ SMALLEST          │"
         echo "  │     Dense 4B. Lightweight, fast for quick tasks.               │"
@@ -631,9 +630,9 @@ RUNMODEL
     MODEL_ID=""
     if [ "$PLATFORM" = "lunar_lake" ]; then
         case $MODEL_CHOICE in
-            1) MODEL_ID="qwen35-35b" ;;
-            2) MODEL_ID="lfm2-24b" ;;
-            3) MODEL_ID="glm-flash" ;;
+            1) MODEL_ID="gemma4-26b" ;;
+            2) MODEL_ID="qwen35-35b" ;;
+            3) MODEL_ID="lfm2-24b" ;;
             4) MODEL_ID="gemma4-e4b" ;;
             5) MODEL_ID="qwen35-4b" ;;
             6) MODEL_ID="anthropic-api" ;;
@@ -654,6 +653,14 @@ RUNMODEL
     fi
 
     case $MODEL_ID in
+        gemma4-26b)
+            MODEL_DISPLAY="Gemma 4 26B-A4B UD-Q4_K_XL"
+            echo "  Downloading Gemma 4 26B-A4B UD-Q4_K_XL (~17GB, this may take a while)..."
+            $HF_DL unsloth/gemma-4-26B-A4B-it-GGUF \
+                gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf \
+                --local-dir "$GGUF_DIR"
+            PULLED_MODEL="local"
+            ;;
         gemma4-e4b)
             MODEL_DISPLAY="Gemma 4 E4B Q4_K_M"
             echo "  Downloading Gemma 4 E4B Q4_K_M (~5GB)..."

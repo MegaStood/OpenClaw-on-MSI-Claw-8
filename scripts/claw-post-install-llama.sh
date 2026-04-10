@@ -328,6 +328,9 @@ ONEAPI_REPO
     # optimized GEMM on Intel iGPU. Scales much better at long contexts
     # than Vulkan (~1.5-1.7x faster at 16K-32K context).
     # Both builds coexist: build/ (Vulkan) and build-sycl/ (SYCL).
+    #
+    # Note: llama.cpp release binaries include a Windows SYCL build, but
+    # NO Linux SYCL build. Linux users must compile from source.
     LLAMA_SYCL_SERVER="$LLAMA_DIR/build-sycl/bin/llama-server"
 
     if [ -f "$LLAMA_SYCL_SERVER" ]; then

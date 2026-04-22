@@ -89,6 +89,21 @@ TTFT (ms) for each combination of prompt length × `--max-model-len`.
 | 4096/512 | 3088 | 3904 | **27014** |
 | 8192/512 | **9063** | 7988 | **14834** |
 
+### qwen3-vl-30b-a3b-instruct (compressed-tensors AWQ gs=32)
+
+Added 2026-04-23 (text-only bench — VL is multimodal, these measurements don't represent image-input workload).
+
+| Shape | 16K | 32K | 64K |
+|---|---|---|---|
+| 1024/512 | 3547† | 3421† | — (device lost) |
+| 2048/512 | 1523 | 4182 | — |
+| 4096/512 | 3389 | 11173 | — |
+| 8192/512 | 8836 | 25164 | — |
+
+† 1024 at both 16K and 32K shows ~3.4–3.5 s — much higher than 2048's 1.5 s at 16K. Suggests cold-kernel pollution for the 1024 shape specifically, despite warmup. The warmup call may not compile the identical kernel path as the 1024/512 measurement.
+
+**The 64K run failed with `UR_RESULT_ERROR_DEVICE_LOST`** — Level Zero driver hit a fatal state after hours of repeated vllm launch cycles. XPU free memory stuck at 8 GiB afterward; reboot required to recover. Given qwen-coder and qwen3-2507 64K were both already catastrophic (15-42 s TTFT), qwen3-vl 64K is not expected to be viable either.
+
 ### Findings
 
 1. **gpt-oss MXFP4 is essentially insensitive to max-model-len** — variation is within single-sample noise. The MXFP4 XPU backend (`vllm/model_executor/layers/fused_moe/mxfp4.py`) handles large KV pools cleanly.
@@ -103,8 +118,24 @@ TTFT (ms) for each combination of prompt length × `--max-model-len`.
 | gpt-oss-20b | anywhere 16K–64K (default 64K fine) | insensitive; pick based on context need |
 | qwen3-30b-a3b-instruct-2507 | **16K or 32K** (both fine, 16K slightly faster) | smooth curves below 64K; avoid 64K |
 | qwen3-coder-30b-a3b | **16K** (not 32K) | 8K penalty halves vs 32K; never use 64K |
+| qwen3-vl-30b-a3b-instruct | **16K** | noticeably slower than non-VL siblings; 32K TTFT is 3–3× worse than 16K for mid/long prompts |
 
 The 2026-04-21 update to `vllm-qwen-coder` launcher (32K) was an improvement over 65K but is **not optimal**. Tighter 16K setting is faster for all shapes the launcher can accommodate. Consider dropping the launcher to 16K unless OpenClaw agent histories genuinely exceed 16K tokens — in which case use qwen3-2507 instead of qwen-coder.
+
+### qwen3-vl is the slowest of all AWQ Qwen3 models at all shapes
+
+At 32K config:
+
+| Shape | qwen3-2507 | qwen-coder | qwen3-vl |
+|---|---|---|---|
+| 1024 | 879 ms | 1053 ms | **3421 ms** |
+| 2048 | 1311 ms | 1954 ms | **4182 ms** |
+| 4096 | 3904 ms | 5178 ms | **11173 ms** |
+| 8192 | 7988 ms | 19978 ms | **25164 ms** |
+
+VL is 3–5× slower than qwen3-2507 at short prompts, and at 8k it's even worse than qwen-coder's already-pathological 20 s. Not explained by just the multimodal vision tower — the text-only prefill path itself is slower. Possible causes: different attention layout for interleaved text/image tokens, different MoE routing distribution from VL-specific fine-tuning, or the cyankiwi VL checkpoint quantization is less optimal than the other two. Not investigated further.
+
+**Practical takeaway:** only use qwen3-vl when you actually need vision. For text-only agent workloads, qwen3-2507 is strictly better on this hardware.
 
 ## qwen-coder 8192 reproducible slowdown
 

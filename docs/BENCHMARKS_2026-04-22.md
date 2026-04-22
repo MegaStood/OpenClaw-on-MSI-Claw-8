@@ -58,18 +58,53 @@ All at 32K max-model-len (gpt-oss 3 GiB KV, Qwen models 4 GiB).
 
 Qwen-family wins decode across the board (~15% lower TPOT than gpt-oss).
 
-## gpt-oss-20b max-model-len sensitivity
+## max-model-len sensitivity (all 3 models, 16K / 32K / 64K)
 
-Separately benched the MXFP4 path at 16K / 32K / 64K to check if it has the same pathological scaling that the compressed-tensors AWQ path exhibited at 65K on 2026-04-21.
+TTFT (ms) for each combination of prompt length × `--max-model-len`.
+
+### gpt-oss-20b (MXFP4 native)
 
 | Shape | 16K | 32K | 64K |
 |---|---|---|---|
-| TTFT 1024 | 988 ms | 954 ms | 1513 ms |
-| TTFT 2048 | 1331 ms | 1413 ms | 1256 ms |
-| TTFT 4096 | 2659 ms | 2501 ms | 2511 ms |
-| TTFT 8192 | 6526 ms | 5817 ms | 5948 ms |
+| 1024/512 | 988 | 954 | 1513 |
+| 2048/512 | 1331 | 1413 | 1256 |
+| 4096/512 | 2659 | 2501 | 2511 |
+| 8192/512 | 6526 | 5817 | 5948 |
 
-**gpt-oss MXFP4 is essentially insensitive to max-model-len** — variation is within single-sample noise. The pathology is **quantization-path-specific**: only the compressed-tensors WNA16 MoE path degrades with large KV pools, not the dedicated MXFP4 XPU backend (`vllm/model_executor/layers/fused_moe/mxfp4.py`).
+### qwen3-coder-30b (compressed-tensors AWQ gs=32)
+
+| Shape | 16K | 32K | 64K |
+|---|---|---|---|
+| 1024/512 | **759** | 1053 | **25905** |
+| 2048/512 | **1281** | 1954 | **23776** |
+| 4096/512 | 3015 | 5178 | **28476** |
+| 8192/512 | 10912 | 19978 | **42204** |
+
+### qwen3-30b-a3b-instruct-2507 (compressed-tensors AWQ gs=32)
+
+| Shape | 16K | 32K | 64K |
+|---|---|---|---|
+| 1024/512 | 869 | 879 | **15996** |
+| 2048/512 | 1357 | 1311 | **33834** |
+| 4096/512 | 3088 | 3904 | **27014** |
+| 8192/512 | **9063** | 7988 | **14834** |
+
+### Findings
+
+1. **gpt-oss MXFP4 is essentially insensitive to max-model-len** — variation is within single-sample noise. The MXFP4 XPU backend (`vllm/model_executor/layers/fused_moe/mxfp4.py`) handles large KV pools cleanly.
+2. **Compressed-tensors AWQ path has catastrophic degradation at 64K** — confirmed on BOTH qwen-coder AND qwen3-2507, so it's the kernel path, not weight-specific. At 64K: qwen-coder 24–42 s TTFT across all prompt sizes (even 1024!); qwen3-2507 15–34 s with high variance. Unusable regime.
+3. **qwen-coder's 8K penalty at 32K is partly config-dependent.** 16K → 10.9 s, 32K → 20 s, 64K → 42 s. Shrinking max-model-len from 32K to 16K buys ~45% speedup at 8k prompts. At 1K prompts, 16K beats 32K too (759 vs 1053 ms).
+4. **qwen3-2507 is more max-model-len tolerant than qwen-coder at ≤32K**, but both collapse identically at 64K — suggesting the 8K qwen-coder penalty at 32K is weight/routing-specific, while the 64K cliff is kernel/allocator-wide.
+
+### Revised config recommendations
+
+| Model | Best max-model-len | Why |
+|---|---|---|
+| gpt-oss-20b | anywhere 16K–64K (default 64K fine) | insensitive; pick based on context need |
+| qwen3-30b-a3b-instruct-2507 | **16K or 32K** (both fine, 16K slightly faster) | smooth curves below 64K; avoid 64K |
+| qwen3-coder-30b-a3b | **16K** (not 32K) | 8K penalty halves vs 32K; never use 64K |
+
+The 2026-04-21 update to `vllm-qwen-coder` launcher (32K) was an improvement over 65K but is **not optimal**. Tighter 16K setting is faster for all shapes the launcher can accommodate. Consider dropping the launcher to 16K unless OpenClaw agent histories genuinely exceed 16K tokens — in which case use qwen3-2507 instead of qwen-coder.
 
 ## qwen-coder 8192 reproducible slowdown
 
